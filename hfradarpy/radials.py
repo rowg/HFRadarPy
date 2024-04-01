@@ -306,7 +306,7 @@ class Radial(CTFParser):
                 self.range_information.drop(self.range_information.index[:], inplace=True)
                 self._tables[key]["data"] = self.range_information
 
-    def mask_over_land(self, subset=False):
+    def mask_over_land(self, subset=False, res='high'):
         """
         Return mask of radial data that lies over the land.
 
@@ -314,7 +314,8 @@ class Radial(CTFParser):
 
         Args:
             subset (bool, optional): Removes any points not over water from the dataset. Defaults to True.
-
+            res (str, optional): Resolution of the www.naturalearthdata.com dataset used to perform the masking
+            None or 'low' or 'high'. Defaults to 'low'.
         Returns:
             self.data (pd.DataFrame): subset = True, a pandas dataframe is returned with data that is over water.
             or
@@ -328,8 +329,12 @@ class Radial(CTFParser):
         else:
             logging.info("Masking radials over land")
 
-            land = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
-            land = land[land["continent"] == "North America"]
+            mask_dir = Path(__file__).parent.with_name(".hfradarpy")
+            if (res == 'high'):
+                maskfile = os.path.join(mask_dir, 'ne_10m_admin_0_countries.shp')
+            else:
+                maskfile = os.path.join(mask_dir, 'ne_110m_admin_0_countries.shp')
+            land = gpd.read_file(maskfile)
 
             geodata = gpd.GeoDataFrame(
                 self.data[["LOND", "LATD"]],
@@ -340,7 +345,7 @@ class Radial(CTFParser):
             geodata = gpd.sjoin(geodata.to_crs(4326), land.to_crs(4326), how="left", predicate="intersects")
 
             # All data in the continent column that lies over water should be nan.
-            water_index = geodata["continent"].isna()
+            water_index = geodata["CONTINENT"].isna()
 
             if subset:
                 # Subset the data to water only
@@ -1343,7 +1348,7 @@ class Radial(CTFParser):
         )
         self.append_to_tableheader(test_str, "(flag)")
 
-    def qc_qartod_valid_location(self, use_mask=False):
+    def qc_qartod_valid_location(self, use_mask=False, res='low'):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -1359,6 +1364,7 @@ class Radial(CTFParser):
 
         Args:
             use_mask (bool, optional): Use mask_over_land function in addition to manufacturers flags. Defaults to False.
+
         """
 
         test_str = "Q203"
@@ -1368,7 +1374,7 @@ class Radial(CTFParser):
             self.data[test_str] = 1  # add new column of passing values
             self.data.loc[(self.data[flag_column] == 128), test_str] = 4  # set to 4 where land is flagged (manufacturer)
             if use_mask:
-                self.data.loc[~self.mask_over_land(), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
+                self.data.loc[~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
             self.metadata["QCTest"].append(
                 (
                     f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{flag_column}==128]: "
@@ -1382,10 +1388,10 @@ class Radial(CTFParser):
                 logger.warning(f"qc_qartod_valid_location, no {flag_column} column, applying land mask option")
                 self.data[test_str] = 1  # add new column of passing values
                 if use_mask:
-                    self.data.loc[~self.mask_over_land(), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
+                    self.data.loc[~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
                     self.metadata["QCTest"].append(
                         (
-                            f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{flag_column}==128]: "
+                            f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[No {flag_column}, uses land mask]: "
                             f"See results in column {test_str} below"
                         )
                     )

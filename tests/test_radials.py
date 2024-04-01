@@ -76,7 +76,7 @@ def test_codar_mask():
     rad1 = Radial(radial_file, replace_invalid=False)
     # Total points before masking
     assert len(rad1.data) == 745
-    rad1.mask_over_land(subset=True)
+    rad1.mask_over_land(subset=True, res='low')
     # Make sure we subset the land points
     assert len(rad1.data) == 592
 
@@ -172,7 +172,7 @@ def test_wera_mask():
     rad1 = Radial(radial_file, replace_invalid=False)
     # Total points before masking
     assert len(rad1.data) == 6327
-    rad1.mask_over_land(subset=True)
+    rad1.mask_over_land(subset=True, res='low')
     # Make sure we subset the land points
     assert len(rad1.data) == 5745
 
@@ -181,20 +181,17 @@ def test_wera_qc():
     radial_file = data_path / "radials" / "ruv" / "WERA" / "RDL_csw_2019_10_24_162300.ruv"
     rad1 = Radial(radial_file, replace_invalid=False)
     rad1.initialize_qc()
-    # assert len(rad1.data) == 6327
-    rad1.mask_over_land(subset=True)
+    rad1.mask_over_land(subset=True,res='low')
     rad1.qc_qartod_radial_count()
-    rad1.qc_qartod_valid_location()
+    rad1.qc_qartod_valid_location(use_mask=True, res='low')
     rad1.qc_qartod_maximum_velocity()
     rad1.qc_qartod_spatial_median()
     rad1.qc_qartod_avg_radial_bearing(reference_bearing=180)
     rad1.qc_qartod_primary_flag()
-    # assert len(rad1.data) == 5745
     assert "Q204" in rad1.data
-    assert "Q203" not in rad1.data  # no VFLG column so we can't run it
+    assert "Q203" in rad1.data
     assert "Q202" in rad1.data
     assert "Q205" in rad1.data
-    # assert 'QC11' in rad1.data  # temporal gradient test
     assert "Q207" in rad1.data
     assert "PRIM" in rad1.data
 
