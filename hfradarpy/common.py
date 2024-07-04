@@ -3,6 +3,13 @@ import glob
 import os
 import re
 import pandas as pd
+import io
+from abc import ABCMeta, abstractmethod
+from collections import OrderedDict
+from calc import dms2dd, createLonLatGridFromTopLeftPointWera, createLonLatGridFromBB
+from pyproj import Geod
+import math
+import numpy as np
 
 import logging
 
@@ -89,3 +96,29 @@ def timestamp_from_lluv_filename(filename):
     mat_time = timestamp_regex.search(filename).group()
     timestamp = dt.datetime.strptime(mat_time, "%Y_%m_%d_%H%M")
     return timestamp
+
+def addBoundingBoxMetadata(obj,lon_min,lon_max,lat_min,lat_max,grid_res=None):
+    """
+    This function adds metadata related to the bounding box to the input Radial or Total object.
+    
+    INPUTS:
+        obj: Radial or Total object
+        lon_min: minimum longitude of the bounding box
+        lon_max: maximum longitude of the bounding box
+        lat_min: minimum latitude of the bounding box
+        lat_max: maximum latitude of the bounding box
+        grid_res: grid resolution in km
+
+        
+    OUTPUTS:
+        obj = Radial or Total object with metadata related to the bounding box
+        
+    """
+    obj.metadata['BBminLongitude'] = str(lon_min) + ' deg'
+    obj.metadata['BBmaxLongitude'] = str(lon_max) + ' deg'
+    obj.metadata['BBminLatitude'] = str(lat_min) + ' deg'
+    obj.metadata['BBmaxLatitude'] = str(lat_max) + ' deg'
+    if grid_res:
+        obj.metadata['GridSpacing'] = str(grid_res) + ' km'
+    
+    return obj
