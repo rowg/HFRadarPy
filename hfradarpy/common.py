@@ -6,7 +6,7 @@ import pandas as pd
 import io
 from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
-from calc import dms2dd, createLonLatGridFromTopLeftPointWera, createLonLatGridFromBB
+from hfradarpy.calc import dms2dd, createLonLatGridFromTopLeftPointWera, createLonLatGridFromBB
 from pyproj import Geod
 import math
 import numpy as np
