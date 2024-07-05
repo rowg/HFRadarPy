@@ -5,7 +5,7 @@ import pandas as pd
 import re
 import copy
 import xarray as xr
-from hfradarpy.ctf import CTFParser
+from hfradarpy.common import fileParser
 from hfradarpy.common import timestamp_from_lluv_filename as get_time
 from hfradarpy.calc import reckon
 from hfradarpy.io.nc import make_encoding
@@ -196,12 +196,12 @@ def concat(rlist, range_minmax=None, bearing=None,
     return ds.sortby("time")
 
 
-class Radial(CTFParser):
+class Radial(fileParser):
     """
     Radial Subclass.
 
     This class should be used when loading a CODAR radial (.ruv) file. This class utilizes the generic LLUV class from
-    ~/hfradarpy/ctf.py in order to load CODAR Radial files
+    ~/hfradarpy/common.py in order to load CODAR Radial files
     """
 
     def __init__(self, fname, replace_invalid=True, empty_radial=False, vflip=False):
