@@ -1,0 +1,325 @@
+{
+    "TIME": {
+        "axis": "T",
+        "long_name": "Time",
+        "standard_name": "time",        
+        "units": "days since 1950-01-01T00:00:00Z",
+        "calendar": "standard",
+        "sdn_parameter_name": "Elapsed time (since 1950-01-01T00:00:00Z)",
+        "sdn_parameter_urn": "SDN:P01::ELTJLD01",
+        "sdn_uom_name": "Days",
+        "sdn_uom_urn": "SDN:P06::UTAA",
+        "ancillary_variables": "TIME_QC"
+    },
+    "DEPTH": {
+        "axis": "Z",
+        "long_name": "Depth",
+        "standard_name": "depth",
+        "units": "m",        
+        "positive": "down",
+        "reference": "sea_level",
+        "sdn_parameter_name": "Depth below surface of the water body",
+        "sdn_parameter_urn": "SDN:P01::ADEPZZ01",
+        "sdn_uom_name": "Metres",
+        "sdn_uom_urn": "SDN:P06::ULAA",
+        "ancillary_variables": "DEPTH_QC"
+    },
+    "LATITUDE": {
+        "axis": "Y",
+        "standard_name": "latitude",
+        "long_name": "Latitude",
+        "units": "degree_north",
+        "sdn_parameter_name": "Latitude north",
+        "sdn_parameter_urn": "SDN:P01::ALATZZ01",
+        "sdn_uom_name": "Degrees north",
+        "sdn_uom_urn": "SDN:P06::DEGN",
+        "grid_mapping": "crs",
+        "ancillary_variables": "POSITION_QC"
+    },
+    "LONGITUDE": {
+        "axis": "X",
+        "standard_name": "longitude",
+        "long_name": "Longitude",
+        "units": "degree_east",
+        "sdn_parameter_name": "Longitude east",
+        "sdn_parameter_urn": "SDN:P01::ALONZZ01",
+        "sdn_uom_name": "Degrees east",
+        "sdn_uom_urn": "SDN:P06::DEGE",
+        "grid_mapping": "crs",
+        "ancillary_variables": "POSITION_QC"
+    },
+    "crs": {
+        "grid_mapping_name": "latitude_longitude",
+        "epsg_code": "EPSG:4326",
+        "semi_major_axis": 6378137.0,
+        "inverse_flattening": 298.257223563
+    },
+    "EWCT": {
+        "valid_min": -10,
+        "valid_max": 10,
+        "standard_name": "surface_eastward_sea_water_velocity",
+        "long_name": "Surface eastward sea water velocity",
+        "units": "m s-1",
+        "sdn_parameter_name": "Eastward velocity of water current in the water body",
+        "sdn_parameter_urn": "SDN:P01::LCEWZZ01",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag VART_QC CSPD_QC DDNS_QC GDOP_QC"
+    },
+    "NSCT": {
+        "valid_min": -10,
+        "valid_max": 10,
+        "standard_name": "surface_northward_sea_water_velocity",
+        "long_name": "Surface northward sea water velocity",
+        "units": "m s-1",
+        "sdn_parameter_name": "Northward current velocity in the water body",
+        "sdn_parameter_urn": "SDN:P01::LCNSZZ01",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag VART_QC CSPD_QC DDNS_QC GDOP_QC"
+    },
+    "EWCS": {
+        "valid_min": -10,
+        "valid_max": 10,
+        "long_name": "Standard deviation of surface eastward sea water velocity",
+        "units": "m s-1",
+        "sdn_parameter_name": "Eastward current velocity standard deviation in the water body",
+        "sdn_parameter_urn": "SDN:P01::SDEWZZZZ",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag VART_QC"
+    },
+    "NSCS": {
+        "valid_min": -10,
+        "valid_max": 10,
+        "long_name": "Standard deviation of surface northward sea water velocity",
+        "units": "m s-1",
+        "sdn_parameter_name": "Northward current velocity standard deviation in the water body",
+        "sdn_parameter_urn": "SDN:P01::SDNSZZZZ",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag VART_QC"
+    },
+    "GDOP": {
+        "long_name": "Geometrical dilution of precision",
+        "units": "1",
+        "valid_min": -20,
+        "valid_max": 20,
+        "comment": "The Geometric Dilution of Precision (GDOP) is the coefficient of the uncertainty, which relates the uncertainties in radial and velocity vectors. The GDOP is a unit-less coefficient, which characterizes the effect that radar station geometry has on the measurement and position determination errors. A low GDOP corresponds to an optimal geometric configuration of radar stations, and results in accurate surface current data. Essentially, GDOP is a quantitative way to relate the radial and velocity vector uncertainties. Setting a threshold on GDOP for total combination avoids the combination of radials with an intersection angle below a certain value. GDOP is a useful metric for filtering errant velocities due to poor geometry.",
+        "sdn_parameter_name": "Dilution of precision ",
+        "sdn_parameter_urn": "SDN:S06::S0600236",
+        "sdn_uom_name": "Dimensionless",
+        "sdn_uom_urn": "SDN:P06::UUUU",
+        "ancillary_variables": "QCflag GDOP_QC"
+    },
+    "CCOV": {
+        "long_name": "Covariance of surface sea water velocity",
+        "units": "m2 s-2",
+        "valid_min": -10,
+        "valid_max": 10,
+        "sdn_parameter_name": " ",
+        "sdn_parameter_urn": " ",
+        "sdn_uom_name": "Square metres per second squared",
+        "sdn_uom_urn": "SDN:P06::SQM2",
+        "ancillary_variables": "QCflag"
+    },
+    "UACC": {
+        "long_name": "Accuracy of surface eastward sea water velocity",
+        "units": "m s-1",
+        "valid_min": -10,
+        "valid_max": 10,
+        "sdn_parameter_name": " ",
+        "sdn_parameter_urn": " ",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag VART_QC"
+    },
+    "VACC": {
+        "long_name": "Accuracy of surface northward sea water velocity",
+        "units": "m s-1",
+        "valid_min": -10,
+        "valid_max": 10,
+        "sdn_parameter_name": " ",
+        "sdn_parameter_urn": " ",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag VART_QC"
+    },
+    "SDN_CRUISE": {
+        "long_name": "Grid grouping label"
+    },
+    "SDN_STATION": {
+        "long_name": "Grid label"
+    },
+    "SDN_LOCAL_CDI_ID": {
+        "long_name": "SeaDataNet CDI identifier"
+    },
+    "SDN_EDMO_CODE": {
+        "long_name": "European Directory of Marine Organisations code for the CDI partner",
+        "units": "1"
+    },
+    "SDN_REFERENCES": {
+        "long_name": "Usage metadata reference"
+    },
+    "SDN_XLINK": {
+        "long_name": "External resource linkages"
+    },
+    "NARX": {
+        "long_name": "Number of receive antennas",
+        "valid_min": 0,
+        "valid_max": 127,
+        "units": "1" ,
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" 
+    },
+    "NATX": {
+        "long_name": "Number of transmit antennas",
+        "valid_min": 0,
+        "valid_max": 127,
+        "units": "1" ,
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" 
+    },
+    "SLTR": {
+        "long_name": "Receive antenna latitudes",
+        "standard_name" : "deployment_latitude",
+        "valid_min": -90,
+        "valid_max": 90,
+        "units": "degree_north" ,
+        "sdn_parameter_name": "Latitude north" ,
+        "sdn_parameter_urn": "SDN:P01::ALATZZ01" ,
+        "sdn_uom_name": "Degrees north" ,
+        "sdn_uom_urn": "SDN:P06::DEGN"
+    },
+    "SLNR": {
+        "long_name": "Receive antenna longitudes",
+        "standard_name" : "deployment_longitude",
+        "valid_min": -180,
+        "valid_max": 180,
+        "units": "degree_east" ,
+        "sdn_parameter_name": "Longitude east" ,
+        "sdn_parameter_urn": "SDN:P01::ALONZZ01" ,
+        "sdn_uom_name": "Degrees east" ,
+        "sdn_uom_urn": "SDN:P06::DEGE"
+    },
+    "SLTT": {
+        "long_name": "Transmit antenna latitudes",
+        "standard_name" : "deployment_latitude",
+        "valid_min": -90,
+        "valid_max": 90,
+        "units": "degree_north" ,
+        "sdn_parameter_name": "Latitude north" ,
+        "sdn_parameter_urn": "SDN:P01::ALATZZ01" ,
+        "sdn_uom_name": "Degrees north" ,
+        "sdn_uom_urn": "SDN:P06::DEGN"
+    },
+    "SLNT": {
+        "long_name": "Transmit antenna longitudes",
+        "standard_name" : "deployment_longitude",
+        "valid_min": -180,
+        "valid_max": 180,
+        "units": "degree_east" ,
+        "sdn_parameter_name": "Longitude east" ,
+        "sdn_parameter_urn": "SDN:P01::ALONZZ01" ,
+        "sdn_uom_name": "Degrees east" ,
+        "sdn_uom_urn": "SDN:P06::DEGE"
+    },
+    "SCDR": {
+        "long_name": "Receive antenna codes",
+        "sdn_parameter_name": " " ,
+        "sdn_parameter_urn": " " ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" 
+    },
+    "SCDT": {
+        "long_name": "Transmit antenna codes",
+        "sdn_parameter_name": " " ,
+        "sdn_parameter_urn": " " ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" 
+    },
+    "TIME_QC": {
+        "long_name": "Time quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "Quality flagging for temporal coordinate.",
+        "units": "1" 
+    },
+    "POSITION_QC": {
+        "long_name": "Position quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "Quality flagging for position coordinates.",
+        "units": "1"
+    },
+    "DEPTH_QC": {
+        "long_name": "Depth quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "Quality flagging for depth coordinate.",
+        "units": "1" 
+    },
+    "QCflag": {
+        "long_name": "Overall quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1"
+    },
+    "VART_QC": {
+        "long_name": "Variance threshold quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1"
+    },
+    "CSPD_QC": {
+        "long_name": "Velocity threshold quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1" 
+    },
+    "GDOP_QC": {
+        "long_name": "GDOP threshold quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1" 
+    },
+    "DDNS_QC": {
+        "long_name": "Data density threshold quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1" 
+    }
+}
