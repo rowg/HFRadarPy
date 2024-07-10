@@ -1,8 +1,11 @@
-# Test folders
+# Test folders and files
 *test*
 *TEST*
 *FUTURE*
 *future*
+
+# EU HFR NODE scripts
+*EU_HFR_NODE*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
