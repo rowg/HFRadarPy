@@ -1,23 +1,73 @@
 import datetime as dt
+from dateutil.relativedelta import relativedelta
+import geopandas as gpd
 import numpy as np
 import os
 import pandas as pd
+from pyproj import Geod, CRS
+from collections import OrderedDict
 import re
+from shapely.geometry import Point
 import copy
 import xarray as xr
-from hfradarpy.ctf import CTFParser
+import netCDF4
+from hfradarpy.common import fileParser
 from hfradarpy.common import timestamp_from_lluv_filename as get_time
-from hfradarpy.calc import reckon
+from hfradarpy.calc import reckon, dms2dd, createLonLatGridFromBB, createLonLatGridFromBBwera, createLonLatGridFromTopLeftPointWera
 from hfradarpy.io.nc import make_encoding
 from pathlib import Path
 from joblib import Parallel, delayed
 import multiprocessing
+import json
+import warnings
+from mpl_toolkits.basemap import Basemap
+import matplotlib.pyplot as plt
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-def qc_radial_file(radial_file, qc_values=None, export=None, save_path=None, clean=False, clean_path=None):
+def velocityMedianInDistLimits(cell,radData,distLim,g):
+    """
+    This function evaluates the median of all radial velocities contained in radData
+    lying within a distance of distLim km from the origin grid cell.
+    The native CRS of the Radial is used for distance calculations.
+    
+    INPUT:
+        cell: Series containing longitude and latitude of the origin grid cell
+        radData: DataFrame containing radial data
+        distLim: range limit in km for selecting velocities for median calculation
+        g: Geod object according to the Radial CRS
+        
+    OUTPUT:
+        median: median of the selected velocities.
+    """
+    # Convert grid cell Series and radial bins DataFrame to numpy arrays
+    cell = cell.to_numpy()
+    radLon = radData['LOND'].to_numpy()
+    radLat = radData['LATD'].to_numpy() 
+    # Evaluate distances between the origin grid cell and radial bins
+    az12,az21,cellToRadDist = g.inv(len(radLon)*[cell[0]],len(radLat)*[cell[1]],radLon,radLat)
+    
+    # Remove the origin from the radial data (i.e. distance = 0)
+    radData = radData.drop(radData[cellToRadDist == 0].index)
+    # Remove the origin from the distance array (i.e. distance = 0)
+    cellToRadDist = cellToRadDist[cellToRadDist != 0]
+    
+    # Figure out which radial bins are within the range limit from the origin cell
+    distSelectionIndices = np.where(cellToRadDist < distLim*1000)[0].tolist()
+    
+    # Evaluate the median of the selected velocities
+    # median = np.median(radData.iloc[distSelectionIndices]['VELO'])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        median = np.nanmedian(radData.iloc[distSelectionIndices]['VELO'])
+            
+    return median
+
+###### COMMENT FROM LORENZO: ######
+######I WOULD REMOVE THIS FUNCTION FROM radials.py FILE AND PUT IT IN A HIGHER LEVEL SCRIPT - ANYWAY, IT SEEMS TO BE UNUSED IN THE TOOLBOX ######
+def qc_qartod_radial_file(radial_file, qc_values=None, export=None, save_path=None, clean=False, clean_path=None):
     """
     Main function to parse and qc radial files.
 
@@ -196,22 +246,23 @@ def concat(rlist, range_minmax=None, bearing=None,
     return ds.sortby("time")
 
 
-class Radial(CTFParser):
+class Radial(fileParser):
     """
     Radial Subclass.
 
     This class should be used when loading a CODAR radial (.ruv) file. This class utilizes the generic LLUV class from
-    ~/hfradarpy/ctf.py in order to load CODAR Radial files
+    ~/hfradarpy/common.py in order to load CODAR Radial files
     """
 
-    def __init__(self, fname, replace_invalid=True, empty_radial=False, vflip=False):
+    def __init__(self, fname, replace_invalid=True, mask_over_land=False, empty_radial=False, vflip=False):
         """
         Initialize the radial object
 
         Args:
-            fname (str or Path): Full file path to the radial .ruv to be loaded
+            fname (str or Path): Full file path to the radial to be loaded
             replace_invalid (bool, optional): Replace invalid/dummy manufacturer fill values with NaN. Defaults to True.
             empty_radial (bool, optional): Returns an empty Radial object. Defaults to False.
+            mask_over_land (bool, optional): Applies masking over land
             vflip (bool, optional): Flip sign of velocities [MINV, MAXV, VELO] so + is away and - is towards the radar. Defaults to False.
         """
         logging.info("Loading radial file: {}".format(fname))
@@ -225,26 +276,30 @@ class Radial(CTFParser):
 
         for key in self._tables.keys():
             table = self._tables[key]
-            if "LLUV" in table["TableType"]:
-                self.data = table["data"]
-            elif "rads" in table["TableType"]:
-                self.diagnostics_radial = table["data"]
-                self.diagnostics_radial["datetime"] = self.diagnostics_radial[
-                    ["TYRS", "TMON", "TDAY", "THRS", "TMIN", "TSEC"]
-                ].apply(lambda s: dt.datetime(*s), axis=1)
-            elif "rcvr" in table["TableType"]:
-                self.diagnostics_hardware = table["data"]
-                self.diagnostics_hardware["datetime"] = self.diagnostics_hardware[
-                    ["TYRS", "TMON", "TDAY", "THRS", "TMIN", "TSEC"]
-                ].apply(lambda s: dt.datetime(*s), axis=1)
-            elif "RINF" in table["TableType"]:
-                self.range_information = table["data"]
-            elif "MRGS" in table["TableType"]:
-                self.merge_information = table["data"]
+            if 'LLUV' in table['TableType']:
+                self.data = table['data']
+            elif 'CRAD' in table['TableType']:
+                self.crad_data = table['data']
+            elif 'rads' in table['TableType']:
+                self.diagnostics_radial = table['data']
+                self.diagnostics_radial['datetime'] = self.diagnostics_radial[['TYRS', 'TMON', 'TDAY', 'THRS', 'TMIN', 'TSEC']].apply(lambda s: dt.datetime(*s), axis=1)
+            elif 'rcvr' in table['TableType']:
+                self.diagnostics_hardware = table['data']
+                self.diagnostics_hardware['datetime'] = self.diagnostics_hardware[['TYRS', 'TMON', 'TDAY', 'THRS', 'TMIN', 'TSEC']].apply(lambda s: dt.datetime(*s), axis=1)
+            elif 'RINF' in table['TableType']:
+                self.range_information = table['data']
+            elif 'MRGS' in table['TableType']:
+                self.merge_information = table['data']                   
+
+        if 'Site' in self.metadata.keys():
+            self.metadata['Site'] = re.sub(r'[\W_]+', '', self.metadata['Site'])
 
         if not self.data.empty:
             if replace_invalid:
                 self.replace_invalid_values()
+                
+            if mask_over_land:
+                self.mask_over_land()
 
             if empty_radial:
                 self.empty_radial()
@@ -279,79 +334,229 @@ class Radial(CTFParser):
 
     def empty_radial(self):
         """
-        Defines an empty radial
+        Create an empty Radial object.
         """
 
-        self.file_path = ""
-        self.file_name = ""
-        self.full_file = ""
-        self.metadata = ""
-        self.is_wera = False
+        self.file_path = ''
+        self.file_name = ''
+        self.full_file = ''
+        self.metadata = ''
         self._iscorrupt = False
         self.time = []
 
         for key in self._tables.keys():
             table = self._tables[key]
-            self._tables[key]["TableRows"] = "0"
-            if "LLUV" in table["TableType"]:
+            self._tables[key]['TableRows'] = '0'
+            if 'LLUV' in table['TableType']:
                 self.data.drop(self.data.index[:], inplace=True)
-                self._tables[key]["data"] = self.data
-            elif "rads" in table["TableType"]:
+                self._tables[key]['data'] = self.data
+            elif 'CRAD' in table['TableType']:
+                self.crad_data.drop(self.crad_data.index[:], inplace=True)
+                self._tables[key]['data'] = self.crad_data
+            elif 'rads' in table['TableType']:
                 self.diagnostics_radial.drop(self.diagnostics_radial.index[:], inplace=True)
-                self._tables[key]["data"] = self.diagnostics_radial
-            elif "rcvr" in table["TableType"]:
+                self._tables[key]['data'] = self.diagnostics_radial
+            elif 'rcvr' in table['TableType']:
                 self.diagnostics_hardware.drop(self.diagnostics_hardware.index[:], inplace=True)
-                self._tables[key]["data"] = self.diagnostics_hardware
-            elif "RINF" in table["TableType"]:
+                self._tables[key]['data'] = self.diagnostics_hardware
+            elif 'RINF' in table['TableType']:
                 self.range_information.drop(self.range_information.index[:], inplace=True)
-                self._tables[key]["data"] = self.range_information
+                self._tables[key]['data'] = self.range_information
 
-    def mask_over_land(self, subset=False, res='high'):
+    def mask_over_land(self, subset=True):
         """
-        Return mask of radial data that lies over the land.
-
-        If subset is set to True, you will get a pd.Dataframe back with data over land removed
-
-        Args:
-            subset (bool, optional): Removes any points not over water from the dataset. Defaults to True.
-            res (str, optional): Resolution of the www.naturalearthdata.com dataset used to perform the masking
-            None or 'low' or 'high'. Defaults to 'low'.
-        Returns:
-            self.data (pd.DataFrame): subset = True, a pandas dataframe is returned with data that is over water.
-            or
-            water_index (pd.Series): subset = False, pandas series containing the index of points of water is returned
+        This function masks the radial vectors lying on land.        
+        Radial vector coordinates are checked against a reference file containing information 
+        about which locations are over land or in an unmeasurable area (for example, behind an 
+        island or point of land). 
+        The GeoPandas "naturalearth_lowres" is used as reference.        
+        The native CRS of the Radial is used for distance calculations.
+        If "subset"  option is set to True, the radial vectors lying on land are removed.
+        
+        INPUT:
+            subset: option enabling the removal of radial vectors on land (if set to True)
+            
+        OUTPUT:
+            waterIndex: list containing the indices of radial vectors lying on water.
         """
-        try:
-            import geopandas as gpd
-            from shapely.geometry import Point
-        except ImportError:
-            raise NotImplementedError("You need geopandas>=0.10.0 and shapely installed in order to apply land mask")
+        # logging.info('Masking radials over land')
+        
+        # Load the reference file (GeoPandas "naturalearth_lowres")
+        land = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+        # land = land[land['continent'] == 'North America']
+
+        # Build the GeoDataFrame containing radial points
+        geodata = gpd.GeoDataFrame(
+            self.data[['LOND', 'LATD']],
+            crs=land.crs.srs.upper(),
+            geometry=[
+                Point(xy) for xy in zip(self.data.LOND.values, self.data.LATD.values)
+            ]
+        )
+        # Join the GeoDataFrame containing radial points with GeoDataFrame containing leasing areas
+        geodata = gpd.tools.sjoin(geodata, land, how='left', predicate='intersects')
+
+        # All data in the continent column that lies over water should be nan.
+        waterIndex = geodata['continent'].isna()
+
+        if subset:
+            # Subset the data to water only
+            self.data = self.data.loc[waterIndex].reset_index()
         else:
-            logging.info("Masking radials over land")
+            return waterIndex
+            
+    def plot(self, lon_min=None, lon_max=None, lat_min=None, lat_max=None, shade=False, show=True):
+        """
+        This function plots the current radial velocity field (i.e. VELU and VELV components) on a 
+        Cartesian grid. The grid is defined either from the input values or from the Radial object
+        metadata. If no input is passed and no metadata related to the bounding box are present, the
+        grid is defined from data content (i.e. LOND and LATD values).
+        If 'shade' is False (default), a quiver plot with color and magnitude of the vectors proportional to
+        current velocity is produced. If 'shade' is True, a quiver plot with uniform vetor lenghts is produced,
+        superimposed to a pseudo-color map representing velocity magnitude.
+        
+        INPUT:
+            lon_min: minimum longitude value in decimal degrees (if None it is taken from Total metadata)
+            lon_max: maximum longitude value in decimal degrees (if None it is taken from Total metadata)
+            lat_min: minimum latitude value in decimal degrees (if None it is taken from Total metadata)
+            lat_max: maximum latitude value in decimal degrees (if None it is taken from Total metadata)
+            shade: boolean for enabling/disabling shade plot (default False)
+            show: boolean for enabling/disabling plot visualization (default True)
+            
+        OUTPUT:
 
-            mask_dir = Path(__file__).parent.with_name(".hfradarpy")
-            if (res == 'high'):
-                maskfile = os.path.join(mask_dir, 'ne_10m_admin_0_countries.shp')
+        """
+        # Initialize figure
+        fig = plt.figure(figsize=(24,16),tight_layout = {'pad': 0})
+        
+        # Get the bounding box limits
+        if not lon_min:
+            if 'BBminLongitude' in self.metadata:
+                lon_min = float(self.metadata['BBminLongitude'].split()[0])
             else:
-                maskfile = os.path.join(mask_dir, 'ne_110m_admin_0_countries.shp')
-            land = gpd.read_file(maskfile)
-
-            geodata = gpd.GeoDataFrame(
-                self.data[["LOND", "LATD"]],
-                crs="EPSG:4326",
-                geometry=[Point(xy) for xy in zip(self.data.LOND.values, self.data.LATD.values)],
-            )
-            # Join the geodataframe containing radial points with geodataframe containing leasing areas
-            geodata = gpd.sjoin(geodata.to_crs(4326), land.to_crs(4326), how="left", predicate="intersects")
-
-            # All data in the continent column that lies over water should be nan.
-            water_index = geodata["CONTINENT"].isna()
-
-            if subset:
-                # Subset the data to water only
-                self.data = self.data.loc[water_index].reset_index(drop=True)
+                lon_min = self.data.LOND.min() - 1
+                
+        if not lon_max:
+            if 'BBmaxLongitude' in self.metadata:
+                lon_max = float(self.metadata['BBmaxLongitude'].split()[0])
             else:
-                return water_index
+                lon_max = self.data.LOND.max() + 1
+                
+        if not lat_min:
+            if 'BBminLatitude' in self.metadata:
+                lat_min = float(self.metadata['BBminLatitude'].split()[0])
+            else:
+                lat_min = self.data.LATD.min() - 1
+                
+        if not lat_max:
+            if 'BBmaxLatitude' in self.metadata:
+                lat_max = float(self.metadata['BBmaxLatitude'].split()[0])
+            else:
+                lat_max = self.data.LATD.max() + 1   
+                
+        # Evaluate longitude and latitude of the center of the map
+        lon_C = (lon_max + lon_min) / 2
+        lat_C = (lat_max + lat_min) / 2
+            
+        # Set the background map
+        m = Basemap(llcrnrlon=lon_min, llcrnrlat=lat_min, urcrnrlon=lon_max, urcrnrlat=lat_max, lon_0=lon_C, lat_0=lat_C,
+                          resolution = 'i', ellps='WGS84', projection='tmerc')        
+        m.drawcoastlines()
+        # m.fillcontinents(color='#cc9955', lake_color='white')
+        m.fillcontinents()
+        m.drawparallels(np.arange(lat_min,lat_max))
+        m.drawmeridians(np.arange(lon_min,lon_max))
+        m.drawmapboundary(fill_color='white')
+        
+        # m.bluemarble()
+        
+        # Get station coordinates and codes
+        if not self.is_wera:
+            siteLon = float(self.metadata['Origin'].split()[1])
+            siteLat = float(self.metadata['Origin'].split()[0])
+            siteCode = self.metadata['Site']
+        else:
+            siteLon = dms2dd(list(map(int,self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+            siteLat = dms2dd(list(map(int,self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+            if self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                siteLat = -siteLat
+            if self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                siteLon = -siteLon
+            siteCode = self.metadata['StationName']
+        
+        # Compute the native map projection coordinates for the stations
+        xS, yS = m(siteLon, siteLat)       
+        
+        # Plot radial stations
+        m.plot(xS,yS,'rD')
+        plt.text(xS,yS,siteCode,fontdict={'fontsize': 22, 'fontweight' : 'bold'})
+        
+        # Plot velocity field
+        if shade:
+            self.to_xarray_multidimensional()
+            
+            if self.is_wera:
+                # Create grid from longitude and latitude
+                [longitudes, latitudes] = np.meshgrid(self.xdr['LONGITUDE'].data, self.xdr['LATITUDE'].data)
+                
+                # Compute the native map projection coordinates for the pseudo-color cells
+                X, Y = m(longitudes, latitudes)
+            else:
+                # Compute the native map projection coordinates for the pseudo-color cells
+                X, Y = m(self.xdr['LONGITUDE'].data, self.xdr['LATITUDE'].data)
+
+            # Create velocity variable in the shape of the grid
+            V = abs(self.xdr['VELO'][0,0,:,:].to_numpy())
+            # V = V[:-1,:-1]            
+            
+            # Make the pseudo-color plot
+            warnings.simplefilter("ignore", category=UserWarning)
+            c = m.pcolormesh(X, Y, V, shading='nearest', cmap=plt.cm.jet, vmin=0, vmax=1)            
+            
+            # Compute the native map projection coordinates for the vectors
+            x, y = m(self.data.LOND, self.data.LATD)
+            
+            # Create the velocity component variables
+            if self.is_wera:
+                u = self.data.VELU
+                v = self.data.VELV
+            else:
+                u = self.data.VELU / 100        # CODAR velocities are in cm/s
+                v = self.data.VELV / 100        # CODAR velocities are in cm/s
+            
+            # Make the quiver plot
+            m.quiver(x, y, u, v, width=0.001, headwidth=4, headlength=4, headaxislength=4)
+            
+            warnings.simplefilter("default", category=UserWarning)
+            
+        else:
+            # Compute the native map projection coordinates for the vectors
+            x, y = m(self.data.LOND, self.data.LATD)
+            
+            # Create the velocity variables
+            if self.is_wera:
+                u = self.data.VELU
+                v = self.data.VELV
+                vel = abs(self.data.VELO)
+            else:
+                u = self.data.VELU / 100                # CODAR velocities are in cm/s
+                v = self.data.VELV / 100                # CODAR velocities are in cm/s
+                vel = abs(self.data.VELO) / 100         # CODAR velocities are in cm/s                
+            
+            # Make the quiver plot
+            m.quiver(x, y, u, v, vel, cmap=plt.cm.jet, width=0.001, headwidth=4, headlength=4, headaxislength=4)
+            
+        # Add colorbar
+        cbar = plt.colorbar()
+        cbar.set_label('m/s',fontsize='x-large')
+        
+        # Add title
+        plt.title(self.file_name + ' radial velocity field', fontdict={'fontsize': 30, 'fontweight' : 'bold'})
+                
+        if show:
+            plt.show()
+        
+        return fig
 
     def to_xarray(self, model="tabular", enhance=False, range_minmax=None, bearing=None):
         """
@@ -565,6 +770,260 @@ class Radial(CTFParser):
             ds = xr.decode_cf(ds)
 
         return ds
+        
+    def to_xarray_multidimensional(self, range_min=None, range_max=None, enhance=False):
+        """
+        This function creates a dictionary of xarray DataArrays containing the variables
+        of the Radial object multidimensionally expanded along the coordinate axes (T,Z,Y,X). 
+        The spatial coordinate axes are chosen based on the file type: (RNGE,BEAR) for 
+        Codar radials and (LOND,LATD) for WERA radials. The coordinate limits and steps 
+        are taken from radial metadata. Only RNGE limits can be specified by the user.
+        Some refinements are performed on Codar data in order to comply CF convention
+        for positive velocities and to have velocities in m/s.
+        The generated dictionary is attached to the Radial object, named as xdr.
+        
+        INPUT:
+            range_min: minimum range value in km (if None it is taken from Radial metadata)
+            range_max: maximum range value in km (if None it is taken from Radial metadata)
+            
+        OUTPUT:
+        """
+        # Initialize empty dictionary
+        xdr = OrderedDict()
+        
+        # process Codar radial
+        if not self.is_wera:
+            # Check range limits   
+            if range_min is None:
+                if 'RangeMin' in self.metadata:
+                    range_min = float(self.metadata['RangeMin'].split()[0])
+                else:
+                    range_min = self.data.RNGE.min()
+            if range_max is None:
+                if 'RangeMax' in self.metadata:
+                    range_max = float(self.metadata['RangeMax'].split()[0])
+                else:
+                    range_max = self.data.RNGE.max()
+            # Get range step
+            if 'RangeResolutionKMeters' in self.metadata:
+                range_step = float(self.metadata['RangeResolutionKMeters'].split()[0])
+            elif 'RangeResolutionMeters' in self.metadata:
+                range_step = float(self.metadata['RangeResolutionMeters'].split()[0]) * 0.001
+            else:
+                range_step = float(1)
+            # build range array
+            range_dim = np.arange(
+                range_min,
+                range_max + range_step,
+                range_step
+            )
+            
+            # Check that the constraint on maximum number of range cells is satisfied
+            range_dim = range_dim[range_dim<=range_max]
+            
+            # Get bearing step
+            if 'AngularResolution' in self.metadata:
+                bearing_step = float(self.metadata['AngularResolution'].split()[0])
+            else:
+                bearing_step = float(1)
+            # build bearing array
+            # bearing_dim = np.arange(1, 361, 1).astype(np.float)  # Complete 360 degree bearing coordinate allows for better aggregation
+            bearing_dim_1 = np.sort(np.arange(np.min(self.data['BEAR']),-bearing_step,-bearing_step))
+            bearing_dim_2 = np.sort(np.arange(np.min(self.data['BEAR']),np.max(self.data['BEAR'])+bearing_step,bearing_step))
+            bearing_dim_3 = np.sort(np.arange(np.max(self.data['BEAR']),360,bearing_step))
+            bearing_dim = np.unique(np.concatenate((bearing_dim_1,bearing_dim_2,bearing_dim_3),axis=None))
+            bearing_dim = bearing_dim[(bearing_dim>=0) & (bearing_dim<=360)]
+    
+            # Create radial grid from bearing and range
+            [bearing, ranges] = np.meshgrid(bearing_dim, range_dim)
+            
+            # Get the ellipsoid of the radial coordinate reference system
+            if 'GreatCircle' in self.metadata:
+                radEllps = self.metadata['GreatCircle'].split()[0].replace('"','')            
+            else:
+                radEllps = 'WGS84'
+            # Create Geod object with the retrieved ellipsoid
+            g = Geod(ellps=radEllps)
+    
+            # Calculate lat/lons from origin, bearing, and ranges
+            latlon = [float(x) for x in re.findall(r"[-+]?\d*\.\d+|\d+", self.metadata['Origin'])]
+            bb = bearing.flatten()
+            rr = ranges.flatten() * 1000        # distances to be expressed in meters for Geod
+            lond, latd, backaz = g.fwd(len(bb)*[latlon[1]], len(bb)*[latlon[0]], bb, rr)
+            lond = np.array(lond)
+            latd = np.array(latd)
+            lond = lond.reshape(bearing.shape)
+            latd = latd.reshape(bearing.shape)            
+            
+            # Find grid indices from radial grid (bearing, ranges)
+            range_map_idx = np.tile(np.nan, self.data['RNGE'].shape)
+            bearing_map_idx = np.tile(np.nan, self.data['BEAR'].shape)
+    
+            for i, line in enumerate(self.data['RNGE']):
+                range_map_idx[i] = np.argmin(np.abs(range_dim - self.data.RNGE[i]))
+                bearing_map_idx[i] = np.argmin(np.abs(bearing_dim - self.data.BEAR[i]))
+                
+            # Set X and Y coordinate mappings
+            X_map_idx = bearing_map_idx         # BEAR is X axis
+            Y_map_idx = range_map_idx           # RNGE is Y axis
+                
+            # Create dictionary containing variables from dataframe in the shape of radial grid
+            d = {key: np.tile(np.nan, bearing.shape) for key in self.data.keys()}
+        
+        # process WERA radials
+        else:
+            # Get longitude limits and step
+            if 'TopLeftLongitude' in self.metadata:
+                topLeftLon = float(self.metadata['TopLeftLongitude'].split()[0])
+            else:
+                topLeftLon = float(0)
+            if 'nx' in self.metadata:
+                cellsLon = int(self.metadata['nx'].split()[0])
+            else:
+                cellsLon = 100
+                
+            # Get latitude limits and step
+            if 'TopLeftLatitude' in self.metadata:
+                topLeftLat = float(self.metadata['TopLeftLatitude'].split()[0])
+            else:
+                topLeftLat = float(90)
+            if 'ny' in self.metadata:
+                cellsLat = int(self.metadata['ny'].split()[0])
+            else:
+                cellsLat = 100
+            
+            # Get cell size in km
+            if 'DGT' in self.metadata:
+                cellSize = float(self.metadata['DGT'].split()[0])
+            else:
+                cellSize = float(2)
+            
+            # Generate grid coordinates
+            gridGS = createLonLatGridFromTopLeftPointWera(topLeftLon, topLeftLat, cellSize, cellsLon, cellsLat)
+            # extract longitudes and latitude from grid GeoSeries and insert them into numpy arrays
+            lon_dim = np.unique(gridGS.x.to_numpy())
+            lat_dim = np.unique(gridGS.y.to_numpy())
+            # manage antimeridian crossing
+            lon_dim = np.concatenate((lon_dim[lon_dim>=0],lon_dim[lon_dim<0]))
+            
+            # # Get the longitude and latitude values of the radial measurements
+            # unqLon = np.sort(np.unique(self.data['LOND']))
+            # unqLat = np.sort(np.unique(self.data['LATD']))
+            
+            # # Insert unqLon and unqLat values to replace the closest in lon_dim and lat_dim 
+            # replaceIndLon = abs(unqLon[None, :] - lon_dim[:, None]).argmin(axis=0).tolist()
+            # replaceIndLat = abs(unqLat[None, :] - lat_dim[:, None]).argmin(axis=0).tolist()
+            # lon_dim[replaceIndLon] = unqLon
+            # lat_dim[replaceIndLat] = unqLat            
+    
+            # Create radial grid from longitude and latitude
+            [longitudes, latitudes] = np.meshgrid(lon_dim, lat_dim)
+    
+            # Find grid indices from lon/lat grid (longitudes, latitudes)
+            lat_map_idx = np.tile(np.nan, self.data['LATD'].shape)
+            lon_map_idx = np.tile(np.nan, self.data['LOND'].shape)
+    
+            for i, line in enumerate(self.data['LATD']):
+                lat_map_idx[i] = np.argmin(np.abs(lat_dim - self.data.LATD[i]))
+                lon_map_idx[i] = np.argmin(np.abs(lon_dim - self.data.LOND[i]))
+                
+            # set X and Y coordinate mappings
+            X_map_idx = lon_map_idx             # LONGITUDE is X axis
+            Y_map_idx = lat_map_idx             # LATITUDE is Y axis
+                
+            # create dictionary containing variables from dataframe in the shape of radial grid
+            d = {key: np.tile(np.nan, longitudes.shape) for key in self.data.keys()}        
+            
+        # Remap all variables
+        for k, v in d.items():
+            v[Y_map_idx.astype(int), X_map_idx.astype(int)] = self.data[k]
+            d[k] = v
+
+        # Add extra dimensions for time (T) and depth (Z) - CF Standard: T, Z, Y, X -> T=axis0, Z=axis1
+        d = {k: np.expand_dims(np.float32(v), axis=(0,1)) for (k, v) in d.items()}            
+
+        # Drop LOND, LATD, BEAR and RNGE variables (they are set as coordinates of the DataSet)
+        if self.is_wera:
+            d.pop('LOND')
+            d.pop('LATD') 
+        else:
+            d.pop('BEAR')
+            d.pop('RNGE')
+            d.pop('LOND')
+            d.pop('LATD') 
+
+        # Refine Codar data
+        if not self.is_wera:
+            # Flip sign so positive velocities are away from the radar as per CF conventions (only for Codar radials)
+            flips = ['MINV', 'MAXV', 'VELO']
+            for f in flips:
+                if f in d:
+                    d[f] = -d[f]
+            # Scale velocities to be in m/s (only for Codar radials)
+            toMs = ['VELU', 'VELV', 'VELO', 'ESPC', 'ETMP', 'MINV', 'MAXV']
+            for t in toMs:
+                if t in d:
+                    d[t] = d[t]*0.01
+
+        # Evaluate timestamp as number of days since 1950-01-01T00:00:00Z
+        timeDelta = self.time - dt.datetime.strptime('1950-01-01T00:00:00Z','%Y-%m-%dT%H:%M:%SZ')
+        ncTime = timeDelta.days + timeDelta.seconds / (60*60*24)
+        
+        # Add all variables as xarray
+        if not self.is_wera:
+            for k, v in d.items():
+                xdr[k] = xr.DataArray(v,
+                                         dims={'TIME': v.shape[0], 'DEPTH': v.shape[1], 'RNGE': v.shape[2], 'BEAR': v.shape[3]},
+                                         coords={'TIME': [ncTime],
+                                                 'DEPTH': [0],
+                                                 'RNGE': range_dim,
+                                                 'BEAR': bearing_dim})
+        else:
+            for k, v in d.items():
+                xdr[k] = xr.DataArray(v,
+                                         dims={'TIME': v.shape[0], 'DEPTH': v.shape[1], 'LATITUDE': v.shape[2], 'LONGITUDE': v.shape[3]},
+                                         coords={'TIME': [ncTime],
+                                                 'DEPTH': [0],
+                                                 'LATITUDE': lat_dim,
+                                                 'LONGITUDE': lon_dim})
+            
+        # Add longitudes and latitudes evaluated from bearing/range grid to the dictionary (BEAR and RNGE are coordinates) for Codar data
+        if not self.is_wera:
+            xdr['LONGITUDE'] = xr.DataArray(np.float32(lond),
+                                         dims={'RNGE': lond.shape[0], 'BEAR': lond.shape[1]},
+                                         coords={'RNGE': range_dim,
+                                                 'BEAR': bearing_dim})
+            xdr['LATITUDE'] = xr.DataArray(np.float32(latd),
+                                         dims={'RNGE': latd.shape[0], 'BEAR': latd.shape[1]},
+                                         coords={'RNGE': range_dim,
+                                                 'BEAR': bearing_dim})          
+            
+        # Add DataArray for coordinate variables
+        xdr['TIME'] = xr.DataArray(ncTime,
+                                 dims={'TIME': len(pd.date_range(self.time, periods=1))},
+                                 coords={'TIME': [ncTime]})
+        xdr['DEPTH'] = xr.DataArray(0,
+                                 dims={'DEPTH': 1},
+                                 coords={'DEPTH': [0]})
+        if not self.is_wera:
+            xdr['RNGE'] = xr.DataArray(range_dim,
+                                 dims={'RNGE': range_dim},
+                                 coords={'RNGE': range_dim})
+            xdr['BEAR'] = xr.DataArray(bearing_dim,
+                                     dims={'BEAR': bearing_dim},
+                                     coords={'BEAR': bearing_dim})
+        else:
+            xdr['LATITUDE'] = xr.DataArray(lat_dim,
+                                 dims={'LATITUDE': lat_dim},
+                                 coords={'LATITUDE': lat_dim})
+            xdr['LONGITUDE'] = xr.DataArray(lon_dim,
+                                     dims={'LONGITUDE': lon_dim},
+                                     coords={'LONGITUDE': lon_dim})              
+        
+        # Attach the dictionary to the Radial object
+        self.xdr = xdr
+        
+        return
 
     @staticmethod
     def enhance_xarray(xds):
@@ -1060,6 +1519,286 @@ class Radial(CTFParser):
         for key in required:
             if key not in present_keys:
                 self.metadata[key] = None
+                
+    def check_ehn_mandatory_variables(self):
+        """
+        This function checks if the Radial object contains all the mandatory data variables
+        (i.e. not coordinate variables) required by the European standard data model developed in the framework of the 
+        EuroGOOS HFR Task Team.
+        Missing variables are appended to the DataFrame containing data, filled with NaNs.
+        
+        INPUT:            
+            
+        OUTPUT:
+        """
+        # Set mandatory variables based on the HFR manufacturer
+        if self.is_wera:
+            chkVars = ['VELU', 'VELV', 'VELO', 'HEAD', 'HCSS', 'EACC']
+        else:
+            chkVars = ['VELU', 'VELV', 'ESPC', 'ETMP', 'MAXV', 'MINV', 'ERSC', 'ERTC', 'XDST', 'YDST', 'VELO', 'HEAD', 'SPRC']
+            
+        # Check variables and add missing ones
+        for vv in chkVars:
+            if vv not in self.data.columns:
+                self.data[vv] = np.nan
+        
+        return
+    
+    
+    def apply_ehn_datamodel(self, network_data, station_data, version):
+        """
+        This function applies the European standard data model developed in the
+        framework of the EuroGOOS HFR Task Team to the Radial object.
+        The Radial object content is stored into an xarray Dataset built from the
+        xarray DataArrays created by the Radial method to_xarray_multidimensional.
+        Variable data types and data packing information are collected from
+        "Data_Models/EHN/Radials/Radial_Data_Packing.json" file.
+        Variable attribute schema is collected from 
+        "Data_Models/EHN/Radials/Radial_Variables.json" file.
+        Global attribute schema is collected from 
+        "Data_Models/EHN/Global_Attributes.json" file.
+        Global attributes are created starting from Radial object metadata and from 
+        DataFrames containing the information about HFR network and radial station
+        read from the EU HFR NODE database.
+        The generated xarray Dataset is attached to the Radial object, named as xds.
+        
+        INPUT:
+            network_data: DataFrame containing the information of the network to which the radial site belongs
+            station_data: DataFrame containing the information of the radial site that produced the radial
+            version: version of the data model
+            
+            
+        OUTPUT:
+        """
+        # Set the netCDF format
+        ncFormat = 'NETCDF4_CLASSIC'
+        
+        # Expand Radial object variables along the coordinate axes
+        self.to_xarray_multidimensional()
+        
+        # Set auxiliary coordinate sizes
+        maxsiteSize = 1
+        refmaxSize = 10
+        maxinstSize = 1
+        
+        # Get data packing information per variable
+        f = open('Data_Models/EHN/Radials/Radial_Data_Packing.json')
+        dataPacking = json.loads(f.read())
+        f.close()
+        
+        # Get variable attributes
+        f = open('Data_Models/EHN/Radials/Radial_Variables.json')
+        radVariables = json.loads(f.read())
+        f.close()
+        
+        # Get global attributes
+        f = open('Data_Models/EHN/Global_Attributes.json')
+        globalAttributes = json.loads(f.read())
+        f.close()
+        
+        # Rename velocity related variables
+        self.xdr['DRVA'] = self.xdr.pop('HEAD')
+        self.xdr['RDVA'] = self.xdr.pop('VELO')
+        self.xdr['EWCT'] = self.xdr.pop('VELU')
+        self.xdr['NSCT'] = self.xdr.pop('VELV')
+        
+        # Drop unnecessary DataArrays from the DataSet
+        if not self.is_wera:
+            self.xdr.pop('VFLG')
+        toDrop = []
+        for vv in self.xdr:
+            if vv not in radVariables.keys():
+                toDrop.append(vv)
+        for rv in toDrop:
+            self.xdr.pop(rv)
+            
+        # Add coordinate reference system to the dictionary
+        self.xdr['crs'] = xr.DataArray(int(0), )  
+        
+        # Add antenna related variables to the dictionary
+        # Number of antennas
+        self.xdr['NARX'] = xr.DataArray([np.expand_dims(station_data.iloc[0]['number_of_receive_antennas'],axis=0)], dims={'TIME': len(pd.date_range(self.time, periods=1)), 'MAXSITE': maxsiteSize})
+        self.xdr['NATX'] = xr.DataArray([np.expand_dims(station_data.iloc[0]['number_of_transmit_antennas'],axis=0)], dims={'TIME': len(pd.date_range(self.time, periods=1)), 'MAXSITE': maxsiteSize})
+        
+        # Longitude and latitude of antennas
+        self.xdr['SLTR'] = xr.DataArray([np.expand_dims(station_data.iloc[0]['site_lat'],axis=0)], dims={'TIME': len(pd.date_range(self.time, periods=1)), 'MAXSITE': maxsiteSize})
+        self.xdr['SLNR'] = xr.DataArray([np.expand_dims(station_data.iloc[0]['site_lon'],axis=0)], dims={'TIME': len(pd.date_range(self.time, periods=1)), 'MAXSITE': maxsiteSize})
+        self.xdr['SLTT'] = xr.DataArray([np.expand_dims(station_data.iloc[0]['site_lat'],axis=0)], dims={'TIME': len(pd.date_range(self.time, periods=1)), 'MAXSITE': maxsiteSize})
+        self.xdr['SLNT'] = xr.DataArray([np.expand_dims(station_data.iloc[0]['site_lon'],axis=0)], dims={'TIME': len(pd.date_range(self.time, periods=1)), 'MAXSITE': maxsiteSize})
+        
+        # Codes of antennas
+        antCode = ('%s' % station_data.iloc[0]['station_id']).encode()
+        self.xdr['SCDR'] = xr.DataArray(np.array([[antCode]]), dims={'TIME': len(pd.date_range(self.time, periods=1)), 'MAXSITE': maxsiteSize})
+        self.xdr['SCDR'].encoding['char_dim_name'] = 'STRING' + str(len(antCode))
+        self.xdr['SCDT'] = xr.DataArray(np.array([[antCode]]), dims={'TIME': len(pd.date_range(self.time, periods=1)), 'MAXSITE': maxsiteSize})
+        self.xdr['SCDT'].encoding['char_dim_name'] = 'STRING' + str(len(antCode))
+                
+        # Add SDN namespace variables to the dictionary
+        siteCode = ('%s' % station_data.iloc[0]['network_id']).encode()
+        self.xdr['SDN_CRUISE'] = xr.DataArray([siteCode], dims={'TIME': len(pd.date_range(self.time, periods=1))})
+        self.xdr['SDN_CRUISE'].encoding['char_dim_name'] = 'STRING' + str(len(siteCode))
+        platformCode = ('%s' % station_data.iloc[0]['network_id'] + '-' + station_data.iloc[0]['station_id']).encode()
+        self.xdr['SDN_STATION'] = xr.DataArray([platformCode], dims={'TIME': len(pd.date_range(self.time, periods=1))})
+        self.xdr['SDN_STATION'].encoding['char_dim_name'] = 'STRING' + str(len(platformCode))
+        ID = ('%s' % platformCode.decode() + '_' + self.time.strftime('%Y-%m-%dT%H:%M:%SZ')).encode()
+        self.xdr['SDN_LOCAL_CDI_ID'] = xr.DataArray([ID], dims={'TIME': len(pd.date_range(self.time, periods=1))})
+        self.xdr['SDN_LOCAL_CDI_ID'].encoding['char_dim_name'] = 'STRING' + str(len(ID))
+        self.xdr['SDN_EDMO_CODE'] = xr.DataArray([np.expand_dims(station_data.iloc[0]['EDMO_code'],axis=0)], dims={'TIME': len(pd.date_range(self.time, periods=1)), 'MAXINST': maxinstSize})
+        sdnRef = ('%s' % network_data.iloc[0]['metadata_page']).encode()
+        self.xdr['SDN_REFERENCES'] = xr.DataArray([sdnRef], dims={'TIME': len(pd.date_range(self.time, periods=1))})
+        self.xdr['SDN_REFERENCES'].encoding['char_dim_name'] = 'STRING' + str(len(sdnRef))
+        sdnXlink = ('%s' % '<sdn_reference xlink:href=\"' + sdnRef.decode() + '\" xlink:role=\"\" xlink:type=\"URL\"/>').encode()
+        self.xdr['SDN_XLINK'] = xr.DataArray(np.array([[sdnXlink]]), dims={'TIME': len(pd.date_range(self.time, periods=1)), 'REFMAX': refmaxSize})
+        self.xdr['SDN_XLINK'].encoding['char_dim_name'] = 'STRING' + str(len(sdnXlink))
+        
+        # Add spatial and temporal coordinate QC variables (set to good data due to the nature of HFR system)
+        self.xdr['TIME_QC'] = xr.DataArray([1],dims={'TIME': len(pd.date_range(self.time, periods=1))})
+        self.xdr['POSITION_QC'] = self.xdr['QCflag'] * 0 + 1
+        self.xdr['DEPTH_QC'] = xr.DataArray([1],dims={'TIME': len(pd.date_range(self.time, periods=1))})
+            
+        # Create DataSet from DataArrays
+        self.xds = xr.Dataset(self.xdr)
+        
+        # Add data variable attributes to the DataSet
+        for vv in self.xds:
+            self.xds[vv].attrs = radVariables[vv]
+            
+        # Update QC variable attribute "comment" for inserting test thresholds and attribute "flag_values" for assigning the right data type
+        for qcv in self.metadata['QCTest']:
+            if qcv in self.xds:
+                self.xds[qcv].attrs['comment'] = self.xds[qcv].attrs['comment'] + ' ' + self.metadata['QCTest'][qcv]
+                self.xds[qcv].attrs['flag_values'] = list(np.int_(self.xds[qcv].attrs['flag_values']).astype(dataPacking[qcv]['dtype']))
+        for qcv in ['TIME_QC', 'POSITION_QC', 'DEPTH_QC']:
+            if qcv in self.xds:
+                self.xds[qcv].attrs['flag_values'] = list(np.int_(self.xds[qcv].attrs['flag_values']).astype(dataPacking[qcv]['dtype']))
+                
+        # Add coordinate variable attributes to the DataSet
+        for cc in self.xds.coords:
+            self.xds[cc].attrs = radVariables[cc]
+        
+        # Remove axis attributes from LONGITUDE and LATITUDE variables for polar geometry radials (i.e. Codar radials)
+        if not self.is_wera:
+            self.xds.LONGITUDE.attrs.pop('axis')
+            self.xds.LATITUDE.attrs.pop('axis')
+            
+        # Evaluate measurement maximum depth
+        vertMax = 3e8 / (8*np.pi * station_data.iloc[0]['transmit_central_frequency']*1e6)
+        
+        # Evaluate time coverage start, end, resolution and duration
+        timeCoverageStart = self.time - relativedelta(minutes=station_data.iloc[0]['temporal_resolution']/2)
+        timeCoverageEnd = self.time + relativedelta(minutes=station_data.iloc[0]['temporal_resolution']/2)
+        timeResRD = relativedelta(minutes=station_data.iloc[0]['temporal_resolution'])
+        timeCoverageResolution = 'PT'
+        if timeResRD.hours !=0:
+            timeCoverageResolution += str(int(timeResRD.hours)) + 'H'
+        if timeResRD.minutes !=0:
+            timeCoverageResolution += str(int(timeResRD.minutes)) + 'M'
+        if timeResRD.seconds !=0:
+            timeCoverageResolution += str(int(timeResRD.seconds)) + 'S'        
+            
+        # Fill global attributes
+        globalAttributes['site_code'] = siteCode.decode()
+        globalAttributes['platform_code'] = platformCode.decode()
+        if station_data.iloc[0]['oceanops_ref'] != None:
+            globalAttributes['oceanops_ref'] = station_data.iloc[0]['oceanops_ref']
+            globalAttributes['wmo_platform_code'] = station_data.iloc[0]['wmo_code']
+            globalAttributes['wigos_id'] = station_data.iloc[0]['wigos_id']
+        globalAttributes['doa_estimation_method'] = station_data.iloc[0]['DoA_estimation_method']
+        globalAttributes['calibration_type'] = station_data.iloc[0]['calibration_type']
+        globalAttributes['last_calibration_date'] = station_data.iloc[0]['last_calibration_date'].strftime('%Y-%m-%dT%H:%M:%SZ')
+        globalAttributes['calibration_link'] = station_data.iloc[0]['calibration_link']
+        # globalAttributes['title'] = network_data.iloc[0]['title']
+        globalAttributes['title'] = 'Near Real Time Surface Ocean Radial Velocity by ' + globalAttributes['platform_code']
+        globalAttributes['summary'] = station_data.iloc[0]['summary']
+        globalAttributes['institution'] = station_data.iloc[0]['institution_name']
+        globalAttributes['institution_edmo_code'] = str(station_data.iloc[0]['EDMO_code'])
+        globalAttributes['institution_references'] = station_data.iloc[0]['institution_website']
+        globalAttributes['id'] = ID.decode()
+        globalAttributes['project'] = network_data.iloc[0]['project']
+        globalAttributes['comment'] = network_data.iloc[0]['comment']
+        globalAttributes['network'] = network_data.iloc[0]['network_name']
+        globalAttributes['data_type'] = globalAttributes['data_type'].replace('current data', 'radial current data')
+        globalAttributes['geospatial_lat_min'] = str(network_data.iloc[0]['geospatial_lat_min'])
+        globalAttributes['geospatial_lat_max'] = str(network_data.iloc[0]['geospatial_lat_max'])
+        if not self.is_wera:
+            globalAttributes['geospatial_lat_resolution'] = str(np.abs(np.mean(np.diff(self.xds.LATITUDE.values[:,0]))))     
+        else:
+            globalAttributes['geospatial_lat_resolution'] = self.metadata['DGT']
+        globalAttributes['geospatial_lon_min'] = str(network_data.iloc[0]['geospatial_lon_min'])
+        globalAttributes['geospatial_lon_max'] = str(network_data.iloc[0]['geospatial_lon_max'])
+        if not self.is_wera:
+            globalAttributes['geospatial_lon_resolution'] = str(np.abs(np.mean(np.diff(self.xds.LONGITUDE.values[:,0]))))     
+        else:
+            globalAttributes['geospatial_lon_resolution'] = self.metadata['DGT']
+        globalAttributes['geospatial_vertical_max'] = str(vertMax)
+        globalAttributes['geospatial_vertical_resolution'] = str(vertMax)        
+        globalAttributes['time_coverage_start'] = timeCoverageStart.strftime('%Y-%m-%dT%H:%M:%SZ')
+        globalAttributes['time_coverage_end'] = timeCoverageEnd.strftime('%Y-%m-%dT%H:%M:%SZ')
+        globalAttributes['time_coverage_resolution'] = timeCoverageResolution
+        globalAttributes['time_coverage_duration'] = timeCoverageResolution
+        globalAttributes['area'] = network_data.iloc[0]['area']
+        globalAttributes['format_version'] = version
+        globalAttributes['netcdf_format'] = ncFormat
+        globalAttributes['citation'] += network_data.iloc[0]['citation_statement']
+        globalAttributes['license'] = network_data.iloc[0]['license']
+        globalAttributes['acknowledgment'] = network_data.iloc[0]['acknowledgment']
+        globalAttributes['processing_level'] = '2B'
+        globalAttributes['contributor_name'] = network_data.iloc[0]['contributor_name']
+        globalAttributes['contributor_role'] = network_data.iloc[0]['contributor_role']
+        globalAttributes['contributor_email'] = network_data.iloc[0]['contributor_email']
+        globalAttributes['manufacturer'] = station_data.iloc[0]['manufacturer']
+        globalAttributes['sensor_model'] = station_data.iloc[0]['manufacturer']
+        globalAttributes['software_version'] = version
+        
+        creationDate = dt.datetime.utcnow()
+        globalAttributes['metadata_date_stamp'] = creationDate.strftime('%Y-%m-%dT%H:%M:%SZ')
+        globalAttributes['date_created'] = creationDate.strftime('%Y-%m-%dT%H:%M:%SZ')
+        globalAttributes['date_modified'] = creationDate.strftime('%Y-%m-%dT%H:%M:%SZ')
+        globalAttributes['history'] = 'Data measured at ' + self.time.strftime('%Y-%m-%dT%H:%M:%SZ') + '. netCDF file created at ' \
+                                    + creationDate.strftime('%Y-%m-%dT%H:%M:%SZ') + ' by the European HFR Node.'        
+        
+        # Add global attributes to the DataSet
+        self.xds.attrs = globalAttributes
+            
+        # Encode data types, data packing and _FillValue for the data variables of the DataSet
+        for vv in self.xds:
+            if vv in dataPacking:
+                if 'dtype' in dataPacking[vv]:
+                    self.xds[vv].encoding['dtype'] = dataPacking[vv]['dtype']
+                if 'scale_factor' in dataPacking[vv]:
+                    self.xds[vv].encoding['scale_factor'] = dataPacking[vv]['scale_factor']                
+                if 'add_offset' in dataPacking[vv]:
+                    self.xds[vv].encoding['add_offset'] = dataPacking[vv]['add_offset']
+                if 'fill_value' in dataPacking[vv]:
+                    self.xds[vv].encoding['_FillValue'] = netCDF4.default_fillvals[np.dtype(dataPacking[vv]['dtype']).kind + str(np.dtype(dataPacking[vv]['dtype']).itemsize)]
+                else:
+                    self.xds[vv].encoding['_FillValue'] = None
+                    
+        # Update valid_min and valid_max variable attributes according to data packing
+        for vv in self.xds:
+            if 'valid_min' in radVariables[vv]:
+                if ('scale_factor' in dataPacking[vv]) and ('add_offset' in dataPacking[vv]):
+                    self.xds[vv].attrs['valid_min'] = np.float_(((radVariables[vv]['valid_min'] - dataPacking[vv]['add_offset']) / dataPacking[vv]['scale_factor'])).astype(dataPacking[vv]['dtype'])
+                else:
+                    self.xds[vv].attrs['valid_min'] = np.float_(radVariables[vv]['valid_min']).astype(dataPacking[vv]['dtype'])
+            if 'valid_max' in radVariables[vv]:             
+                if ('scale_factor' in dataPacking[vv]) and ('add_offset' in dataPacking[vv]):
+                    self.xds[vv].attrs['valid_max'] = np.float_(((radVariables[vv]['valid_max'] - dataPacking[vv]['add_offset']) / dataPacking[vv]['scale_factor'])).astype(dataPacking[vv]['dtype'])
+                else:
+                    self.xds[vv].attrs['valid_max'] = np.float_(radVariables[vv]['valid_max']).astype(dataPacking[vv]['dtype'])
+            
+        # Encode data types and avoid data packing, valid_min, valid_max and _FillValue for the coordinate variables of the DataSet
+        for cc in self.xds.coords:
+            if cc in dataPacking:
+                if 'dtype' in dataPacking[cc]:
+                    self.xds[cc].encoding['dtype'] = dataPacking[cc]['dtype']
+                if 'valid_min' in radVariables[cc]:
+                    del self.xds[cc].attrs['valid_min']
+                if 'valid_max' in radVariables[cc]:
+                    del self.xds[cc].attrs['valid_max']
+                self.xds[cc].encoding['_FillValue'] = None
+               
+        return
 
     def to_netcdf(self, filename, model="tabular", prepend_extension=False, range_minmax=None, bearing=None, enhance=True,
                   user_attributes=None):
@@ -1303,11 +2042,13 @@ class Radial(CTFParser):
 
     def initialize_qc(self):
         """
-        Initialize an empty list of QC tests
+        Initialize dictionary entry for QC metadata.
         """
-        self.metadata["QCTest"] = []
+        # Initialize dictionary entry for QC metadta
+        self.metadata['QCTest'] = {}
 
-    # QARTOD QC Tests
+    # QARTOD QC TESTS
+    
     def qc_qartod_avg_radial_bearing(self, reference_bearing, warning_threshold=15, failure_threshold=30):
         """
         Integrated Ocean Observing System (IOOS)
@@ -1336,16 +2077,11 @@ class Radial(CTFParser):
             flag = 1
 
         self.data[test_str] = flag  # Assign the flags to the column
-        self.metadata["QCTest"].append(
-            (
-                f"qc_qartod_avg_radial_bearing ({test_str}) - Test applies to entire file. Thresholds="
-                "[ "
-                f"reference_bearing={reference_bearing} (degrees) "
-                f"warning={warning_threshold} (degrees) "
-                f"failure={failure_threshold} (degrees) "
-                f"]: See result in column {test_str} below"
-            )
-        )
+        self.metadata['QCTest'][test_str] = f"qc_qartod_avg_radial_bearing ({test_str}) - Test applies to entire file. Thresholds=" \
+                + "[ " + f"reference_bearing={reference_bearing} (degrees) " \
+                + f"warning={warning_threshold} (degrees) " \
+                + f"failure={failure_threshold} (degrees) " \
+                + f"]: See result in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
     def qc_qartod_valid_location(self, use_mask=False, res='low'):
@@ -1375,12 +2111,8 @@ class Radial(CTFParser):
             self.data.loc[(self.data[flag_column] == 128), test_str] = 4  # set to 4 where land is flagged (manufacturer)
             if use_mask:
                 self.data.loc[~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
-            self.metadata["QCTest"].append(
-                (
-                    f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{flag_column}==128]: "
-                    f"See results in column {test_str} below"
-                )
-            )
+            self.metadata['QCTest'][test_str] = f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{flag_column}==128]: " \
+            		+ f"See results in column {test_str} below"
             self.append_to_tableheader(test_str, "(flag)")
 
         else:
@@ -1389,12 +2121,8 @@ class Radial(CTFParser):
                 self.data[test_str] = 1  # add new column of passing values
                 if use_mask:
                     self.data.loc[~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
-                    self.metadata["QCTest"].append(
-                        (
-                            f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[No {flag_column}, uses land mask]: "
-                            f"See results in column {test_str} below"
-                        )
-                    )
+                    self.metadata['QCTest'][test_str] = f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[No {flag_column}, uses land mask]: " \
+                    		+ f"See results in column {test_str} below"
                     self.append_to_tableheader(test_str, "(flag)")
 
             except:
@@ -1437,16 +2165,11 @@ class Radial(CTFParser):
             radial_count_flag = 1
 
         self.data[test_str] = radial_count_flag
-        self.metadata["QCTest"].append(
-            (
-                f"qc_qartod_radial_count ({test_str}) - Test applies to entire file. Thresholds="
-                "[ "
-                f"failure={min_count} (radials) "
-                f"warning_num={low_count} (radials) "
-                f"<valid_radials={num_radials}> "
-                f"]:  See results in column {test_str} below"
-            )
-        )
+        self.metadata['QCTest'][test_str] = f"qc_qartod_radial_count ({test_str}) - Test applies to entire file. Thresholds=" \
+        	+ "[ " + f"failure={min_count} (radials) " \
+        	+ f"warning_num={low_count} (radials) " \
+        	+ f"<valid_radials={num_radials}> " \
+        	+ f"]:  See results in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
     def qc_qartod_maximum_velocity(self, max_speed=250, high_speed=150):
@@ -1482,16 +2205,10 @@ class Radial(CTFParser):
         # if velocity is greater than radial_max_speed, set that row as a fail, 4, flag
         self.data.loc[(self.data["VELO"].abs() > max_speed), test_str] = 4
 
-        self.metadata["QCTest"].append(
-            (
-                f"qc_qartod_maximum_velocity ({test_str}) - Test applies to each row. Thresholds="
-                "[ "
-                f"high_vel={str(high_speed)} (cm/s) "
-                f"max_vel={str(max_speed)} (cm/s) "
-                f"]: See results in column {test_str} below"
-            )
-        )
-
+        self.metadata['QCTest'][test_str] = f"qc_qartod_maximum_velocity ({test_str}) - Test applies to each row. Thresholds=" \
+        	+ "[ " + f"high_vel={str(high_speed)} (cm/s) " \
+        	+ f"max_vel={str(max_speed)} (cm/s) " \
+        	+ f"]: See results in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
     def qc_qartod_spatial_median(
@@ -1583,16 +2300,11 @@ class Radial(CTFParser):
             boolean = diffcol.abs() > smed_current_difference
 
         self.data[test_str] = self.data[test_str].where(~boolean, other=4)
-        self.metadata["QCTest"].append(
-            (
-                f"qc_qartod_spatial_median ({test_str}) - Test applies to each row. Thresholds="
-                "[ "
-                f"range_cell_limit={str(smed_range_cell_limit)} (range cells) "
-                f"angular_limit={str(smed_angular_limit)} (degrees) "
-                f"current_difference={str(smed_current_difference)} (cm/s) "
-                f"]: See results in column {test_str} below"
-            )
-        )
+        self.metadata['QCTest'][test_str] = f"qc_qartod_spatial_median ({test_str}) - Test applies to each row. Thresholds=" \
+        	+ "[ " + f"range_cell_limit={str(smed_range_cell_limit)} (range cells) " \
+        	+ f"angular_limit={str(smed_angular_limit)} (degrees) " \
+        	+ f"current_difference={str(smed_current_difference)} (cm/s) " \
+        	+ f"]: See results in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
     def qc_qartod_syntax(self):
@@ -1657,9 +2369,7 @@ class Radial(CTFParser):
             syntax = 4
 
         self.data[test_str] = syntax
-        self.metadata["QCTest"].append(
-            f"qc_qartod_syntax ({test_str}) - Test applies to entire file. Thresholds=[N/A]: See results in column {test_str}"
-        )
+        self.metadata['QCTest'][test_str] = f"qc_qartod_syntax ({test_str}) - Test applies to entire file. Thresholds=[N/A]: See results in column {test_str}"
         self.append_to_tableheader(test_str, "(flag)")
 
     def qc_qartod_temporal_gradient(self, r0, gradient_temp_fail=54, gradient_temp_warn=36):
@@ -1698,15 +2408,10 @@ class Radial(CTFParser):
         """
         test_str = "Q206"
         # self.data[test_str] = data
-        self.metadata["QCTest"].append(
-            (
-                f"qc_qartod_temporal_gradient ({test_str}) - Test applies to each row. Thresholds="
-                "[ "
-                f"gradient_temp_warn={str(gradient_temp_warn)} (cm/s*hr) "
-                f"gradient_temp_fail={str(gradient_temp_fail)} (cm/s*hr) "
-                f"]: See results in column {test_str} below"
-            )
-        )
+        self.metadata['QCTest'][test_str] = f"qc_qartod_temporal_gradient ({test_str}) - Test applies to each row. Thresholds=" \
+        	+ "[ " + f"gradient_temp_warn={str(gradient_temp_warn)} (cm/s*hr) " \
+        	+ f"gradient_temp_fail={str(gradient_temp_fail)} (cm/s*hr) " \
+        	+ f"]: See results in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
         if os.path.exists(r0):
@@ -1772,15 +2477,10 @@ class Radial(CTFParser):
         """
         test_str = "Q901"
         # self.data[test_str] = data
-        self.metadata["QCTest"].append(
-            (
-                f"qc_qartod_radial_stuck_value_version_2 ({test_str}) - Test applies to each row. Thresholds="
-                "[ "
-                f"stuck_value_resolution={str(resolution)} (cm/s) "
-                f"stuck_value_number_of_timesteps={str(N)}"
-                f"]: See results in column {test_str} below"
-            )
-        )
+        self.metadata['QCTest'][test_str] = f"qc_qartod_radial_stuck_value_version_2 ({test_str}) - Test applies to each row. Thresholds=" \
+        	+ "[ " + f"stuck_value_resolution={str(resolution)} (cm/s) " \
+        	+ f"stuck_value_number_of_timesteps={str(N)}" \
+        	+ f"]: See results in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
         # create list of previous files
@@ -1869,15 +2569,10 @@ class Radial(CTFParser):
         """
         test_str = "Q209"
         # self.data[test_str] = data
-        self.metadata["QCTest"].append(
-            (
-                f"qc_qartod_radial_stuck_value ({test_str}) - Test applies to each row. Thresholds="
-                "[ "
-                f"stuck_value_resolution={str(resolution)} (cm/s) "
-                f"stuck_value_number_of_timesteps={str(N)}"
-                f"]: See results in column {test_str} below"
-            )
-        )
+        self.metadata['QCTest'][test_str] = f"qc_qartod_radial_stuck_value ({test_str}) - Test applies to each row. Thresholds=" \
+        	+ "[ " + f"stuck_value_resolution={str(resolution)} (cm/s) " \
+        	+ f"stuck_value_number_of_timesteps={str(N)}" \
+        	+ f"]: See results in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
         #set all results to passing
@@ -1967,12 +2662,7 @@ class Radial(CTFParser):
         self.data[test_str] = self.data[test_str].where(~equals_4, other=4)
 
         included_test_strs = ", ".join(included_tests)
-        self.metadata["QCTest"].append(
-            (
-                f'qc_qartod_primary_flag ({test_str}) - Primary Flag - Highest flag value of {included_test_strs}' +
-                '("not_evaluated" flag results ignored)'
-            )
-        )
+        self.metadata['QCTest'][test_str] = f'qc_qartod_primary_flag ({test_str}) - Primary Flag - Highest flag value of {included_test_strs}' + '("not_evaluated" flag results ignored)'
         self.append_to_tableheader(test_str, "(flag)")
         # %QCFlagDefinitions: 1=pass 2=not_evaluated 3=suspect 4=fail 9=missing_data
 
@@ -1986,6 +2676,283 @@ class Radial(CTFParser):
         """
         self._tables[1]["_TableHeader"][0].append(test_string)
         self._tables[1]["_TableHeader"][1].append(test_unit)
+        
+    # EUROPEAN HFR NODE (EHN) QC Tests
+    
+    def qc_ehn_avg_radial_bearing(self, minBear=0, maxBear=360):
+        """
+        
+        This QC test labels radial velocity vectors with a ‘good_data” flag if the average radial bearing 
+        of all the vectors contained in the radial lie within the specified range for normal operations.
+        Otherwise, the vectors are labeled with a “bad_data” flag.
+        The ARGO QC flagging scale is used.
+        
+        This test is applicable only to DF systems. 
+        Data files from BF systems will have this variable filled with a “good_data” flag.
+        
+        This test was defined in the framework of the EuroGOOS HFR Task Team based on the
+        Average Radial Bearing test (QC207) from the Integrated Ocean Observing System (IOOS) 
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD).
+        
+        INPUTS:
+            minBear: minimum angle in degrees of the specified range for normal operations
+            maxBear: maximum angle in degrees of the specified range for normal operations
+            
+        
+        """
+        # Set the test name
+        testName = 'AVRB_QC'
+        
+        # Evaluate the average bearing
+        if self.is_wera:
+            self.data.loc[:,testName] = 1
+        else:
+            avgBear = self.data['BEAR'].mean()
+    
+            if avgBear >= minBear and avgBear <= maxBear:
+                self.data.loc[:,testName] = 1
+            else:
+                self.data.loc[:,testName] = 4
+
+        self.metadata['QCTest'][testName] = 'Average Radial Bearing QC Test - Test applies to entire file. ' \
+            + 'Thresholds=[' + f'minimum bearing={minBear} (degrees) - ' + f'maximum bearing={maxBear} (degrees)]'
+        
+    def qc_ehn_radial_count(self, radMinCount=150):
+        """
+        
+        This test labels radial velocity vectors with a “good data” flag if the number of velocity vectors contained
+        in the radial is bigger than the minimum count specified for normal operations.
+        Otherwise the vectors are labeled with a “bad data” flag.
+        The ARGO QC flagging scale is used.
+        
+        This test was defined in the framework of the EuroGOOS HFR Task Team based on the
+        Radial Count test from (QC204) the Integrated Ocean Observing System (IOOS) Quality Assurance of 
+        Real-Time Oceanographic Data (QARTOD).
+        
+        INPUTS:
+            radMinCount: minimum number of velocity vectors for normal operations            
+        
+        """
+        # Set the test name
+        testName = 'RDCT_QC'
+        
+        # Get the number of velocity vectors contained in the radial
+        numRad = len(self.data)
+
+        if numRad >= radMinCount:
+            self.data.loc[:,testName] = 1
+        else:
+            self.data.loc[:,testName] = 4
+
+        self.metadata['QCTest'][testName] = 'Radial Count QC Test - Test applies to entire file. ' \
+            + 'Threshold=[' + f'minimum number of radial vectors={radMinCount}]'
+        
+    def qc_ehn_maximum_velocity(self, radMaxSpeed=1.2):
+        """
+        This test labels radial velocity vectors whose module is smaller than a maximum velocity threshold 
+        with a “good data” flag. Otherwise the vectors are labeled with a “bad data” flag.
+        The ARGO QC flagging scale is used.
+        
+        This test was defined in the framework of the EuroGOOS HFR Task Team based on the
+        Max Threshold test (QC202) from the Integrated Ocean Observing System (IOOS) Quality Assurance of 
+        Real-Time Oceanographic Data (QARTOD).
+        
+        INPUTS:
+            radMaxSpeed: maximum velocity in m/s for normal operations                     
+        """
+        # Set the test name
+        testName = 'CSPD_QC'
+    
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:,testName] = 1
+    
+        # set bad flag for velocities not passing the test
+        if self.is_wera:
+            self.data.loc[(self.data['VELO'].abs() > radMaxSpeed), testName] = 4          # velocity in m/s (CRAD)
+        else:
+            self.data.loc[(self.data['VELO'].abs() > radMaxSpeed*100), testName] = 4      # velocity in cm/s (LLUV)
+    
+        self.metadata['QCTest'][testName] = 'Velocity Threshold QC Test - Test applies to each vector. ' \
+            + 'Threshold=[' + f'maximum velocity={radMaxSpeed} (m/s)]'
+        
+    def qc_ehn_median_filter(self, dLim=10, curLim=0.5):
+        """
+        This test evaluates, for each radial vector, the median of the modules of all vectors lying
+        within a distance of <dLim> km. 
+        Each vector for which the difference between its module and the median is smaller than
+        the specified threshold for normal operations (curLim), is labeled with a "good data" flag.
+        Otherwise the vector is labeled with a “bad data” flag.
+        The ARGO QC flagging scale is used.
+        The native CRS of the Radial is used for distance calculations.
+        
+        This test was defined in the framework of the EuroGOOS HFR Task Team based on the 
+        Spatial Median test (QC205) from the Integrated Ocean Observing System (IOOS) Quality 
+        Assurance of Real-Time Oceanographic Data (QARTOD).
+        
+        INPUTS:
+            dLim: distance limit in km for selecting vectors for median calculation
+            curLim: velocity-median difference threshold in m/s for normal opertions
+        """
+        # Set the test name
+        testName = 'MDFL_QC'
+        
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:,testName] = 1
+        
+        # Get the ellipsoid of the radial coordinate reference system
+        radEllps = self.metadata['GreatCircle'].split()[0].replace('"','')
+        
+        # Create Geod object with the retrieved ellipsoid
+        g = Geod(ellps=radEllps)
+        
+        # Evaluate the median of velocities within dLim for each radial vector
+        median = self.data.loc[:,['LOND','LATD']].apply(lambda x: velocityMedianInDistLimits(x,self.data,dLim,g),axis=1)
+        
+        # set bad flag for vectors not passing the test
+        if self.is_wera:
+            self.data.loc[abs(self.data['VELO'] - median) > curLim, testName] = 4          # velocity in m/s (CRAD)
+        else:
+            self.data.loc[abs(self.data['VELO'] - median) > curLim*100, testName] = 4      # velocity in cm/s (LLUV)
+        
+        self.metadata['QCTest'][testName] = 'Median Filter QC Test - Test applies to each vector. ' \
+            + 'Thresholds=[' + f'distance limit={str(dLim)} (km) ' + f'velocity-median difference threshold={str(curLim)} (m/s)]'
+        
+    def qc_ehn_over_water(self):
+        """
+        This test labels radial velocity vectors that lie on water with a good data” flag.
+        Otherwise the vectors are labeled with a “bad data” flag.
+        The ARGO QC flagging scale is used.
+        
+        Radial vector coordinates are checked against a reference file containing information 
+        about which locations are over land or in an unmeasurable area (for example, behind an 
+        island or point of land). 
+        The GeoPandas "naturalearth_lowres" is used as reference.
+        CODAR radials are beforehand flagged based on the "VFLAG" variable (+128 means "on land").
+        
+        This test was defined in the framework of the EuroGOOS HFR Task Team based on the 
+        Valid Location (Test 203) from the Integrated Ocean Observing System (IOOS) Quality 
+        Assurance of Real-Time Oceanographic Data (QARTOD).
+        """
+        # Set the test name
+        testName = 'OWTR_QC'
+        
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:,testName] = 1
+        
+        # Set the "vector-on-land" flag name for CODAR data
+        vectorOnLandFlag = 'VFLG'
+
+        # Set bad flag where land is flagged by CODAR manufacturer
+        if not self.is_wera:
+            if vectorOnLandFlag in self.data:
+                self.data.loc[(self.data[vectorOnLandFlag] == 128), testName] = 4  
+            
+        # Set bad flag where land is flagged (mask_over_land method)
+        self.data.loc[~self.mask_over_land(subset=False), testName] = 4
+            
+        self.metadata['QCTest'][testName] = 'Over Water QC Test - Test applies to each vector. ' \
+            + 'Thresholds=[' + 'GeoPandas "naturalearth_lowres"]'
+        
+    def qc_ehn_maximum_variance(self, radMaxVar=1):
+        """
+        This test labels radial velocity vectors whose temporal variance is smaller than
+        a maximum variance threshold with a “good data” flag. 
+        Otherwise the vectors are labeled with a “bad data” flag.
+        The ARGO QC flagging scale is used.
+        
+        This test was defined in the framework of the EuroGOOS HFR Task Team based on the
+        U Component Uncertainty and V Component Uncertainty tests (QC306 and QC307) from the
+        Integrated Ocean Observing System (IOOS) Quality Assurance of Real-Time Oceanographic 
+        Data (QARTOD).
+        
+        This test is NOT RECOMMENDED for CODAR data because the parameter defining the variance
+        is computed at each time step, and therefore considered not statistically solid 
+        (as documented in the fall 2013 CODAR Currents Newsletter).
+        
+        INPUTS:
+            radMaxVar: maximum variance in m2/s2 for normal operations                     
+        """
+        # Set the test name
+        testName = 'VART_QC'
+    
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:,testName] = 1
+    
+        # Set bad flag for variances not passing the test
+        if self.is_wera:
+            self.data.loc[(self.data['HCSS'] > radMaxVar), testName] = 4           # HCSS is the temporal variance for WERA data
+        else:
+            self.data.loc[((self.data['ETMP']/100)**2 > radMaxVar), testName] = 4  # ETMP is the temporal standard deviation in cm/s for CODAR data
+    
+        self.metadata['QCTest'][testName] = 'Variance Threshold QC Test - Test applies to each vector. ' \
+            + 'Threshold=[' + f'maximum variance={radMaxVar} (m2/s2)]'
+        
+    def qc_ehn_temporal_derivative(self, r0, tempDerThr=1):
+        """
+        This test compares the velocity of each radial vector with the velocity of the radial vector 
+        measured in the previous timestamp at the same location.
+        Each vector for which the velocity difference is smaller than the specified threshold for normal 
+        operations (tempDerThr), is labeled with a "good data" flag.
+        Otherwise the vector is labeled with a “bad data” flag.
+        The ARGO QC flagging scale is used.
+        
+        This test was defined in the framework of the EuroGOOS HFR Task Team based on the 
+        Temporal Gradient test (QC206) from the Integrated Ocean Observing System (IOOS) Quality 
+        Assurance of Real-Time Oceanographic Data (QARTOD).
+        
+        INPUTS:
+            r0: Radial object of the previous timestamp
+            tempDerThr: velocity difference threshold in m/s for normal operations
+        """
+        # Set the test name
+        testName = 'VART_QC'
+        
+        # Check if the previous timestamp radial file exists
+        if not r0 is None:
+            # Merge the data DataFrame of the two Radials and evaluate velocity differences at each location
+            mergedDF = self.data.merge(r0.data, on=['LOND', 'LATD'], how='left', suffixes=(None, '_x'), indicator='Exist')
+            velDiff = (mergedDF['VELO'] - mergedDF['VELO_x']).abs()
+
+            # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+            self.data.loc[:,testName] = 1
+
+            # Set rows of the DataFrame for QC data as not evaluated (flag = 0) for locations existing in the current radial but not in the previous one
+            self.data.loc[mergedDF['Exist'] == 'left_only', testName] = 0
+
+            # Set bad flag for vectors not passing the test
+            if self.is_wera:
+                self.data.loc[(velDiff > tempDerThr), testName] = 4             # velocity in m/s (CRAD)
+            else:
+                self.data.loc[(velDiff > tempDerThr*100), testName] = 4         # velocity in cm/s (LLUV)
+
+        else:
+            # Add new column to the DataFrame for QC data by setting every row as not evaluated (flag = 0)
+            self.data.loc[:,testName] = 0
+        
+        self.metadata['QCTest'][testName] = 'Temporal Derivative QC Test - Test applies to each vector. ' \
+            + 'Threshold=[' + f'velocity difference threshold={str(tempDerThr)} (m/s)]'
+        
+    def qc_ehn_overall_qc_flag(self):
+        """
+        
+        This QC test labels radial velocity vectors with a ‘good_data” flag if all QC tests are passed.
+        Otherwise, the vectors are labeled with a “bad_data” flag.
+        The ARGO QC flagging scale is used.
+        
+        INPUTS:
+            
+        
+        """
+        # Set the test name
+        testName = 'QCflag'
+        
+        # Add new column to the DataFrame for QC data by setting every row as not passing the test (flag = 4)
+        self.data.loc[:,testName] = 4
+        
+        # Set good flags for vectors passing all QC tests
+        self.data.loc[self.data.loc[:, self.data.columns.str.contains('_QC')].eq(1).all(axis=1), testName] = 1
+
+        self.metadata['QCTest'][testName] = 'Overall QC Flag - Test applies to each vector. Test checks if all QC tests are passed.'
 
     def reset(self):
         """

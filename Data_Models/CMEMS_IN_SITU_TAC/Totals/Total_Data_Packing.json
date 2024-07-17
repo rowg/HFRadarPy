@@ -1,0 +1,170 @@
+{
+    "TIME": {
+        "dtype": "float64"
+    },
+    "DEPH": {
+        "dtype": "float32",
+        "fill_value": ""
+    },
+    "LATITUDE": {
+        "dtype": "float32"
+    },
+    "LONGITUDE": {
+        "dtype": "float32"
+    },
+    "crs": {
+        "dtype": "int16"
+    },
+    "SDN_CRUISE": {
+    },
+    "SDN_STATION": {
+    },
+    "SDN_LOCAL_CDI_ID": {
+    },
+    "SDN_EDMO_CODE": {
+        "dtype": "int16",
+        "fill_value": ""
+    },
+    "SDN_REFERENCES": {
+    },
+    "SDN_XLINK": {
+    },
+    "EWCT": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "NSCT": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "EWCS": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "NSCS": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "CCOV": {
+        "dtype": "int32",
+        "scale_factor": 1e-6,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "GDOP": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "UACC": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "VACC": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },    
+    "NARX": {
+        "dtype": "int8",
+        "scale_factor": 1,
+        "add_offset": 0,
+        "fill_value": "" 
+    },
+    "NATX": {
+        "dtype": "int8",
+        "scale_factor": 1,
+        "add_offset": 0,
+        "fill_value": "" 
+    },
+    "SLTR": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "SLNR": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "SLTT": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "SLNT": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "SCDR": {
+        "fill_value": "" 
+    },
+    "SCDT": {
+        "fill_value": "" 
+    },
+    "TIME_QC": {
+        "dtype": "int8",
+        "scale_factor": 1,
+        "add_offset": 0,
+        "fill_value": "" 
+    },
+    "POSITION_QC": {
+        "dtype": "int8",
+        "scale_factor": 1,
+        "add_offset": 0,
+        "fill_value": "" 
+    },
+    "DEPH_QC": {
+        "dtype": "int8",
+        "scale_factor": 1,
+        "add_offset": 0,
+        "fill_value": "" 
+    },
+    "QCflag": {
+        "dtype": "int8",
+        "scale_factor": 1,
+        "add_offset": 0,
+        "fill_value": "" 
+    },
+    "VART_QC": {
+        "dtype": "int8",
+        "scale_factor": 1,
+        "add_offset": 0,
+        "fill_value": "" 
+    },
+    "CSPD_QC": {
+        "dtype": "int8",
+        "scale_factor": 1,
+        "add_offset": 0,
+        "fill_value": "" 
+    },
+    "GDOP_QC": {
+        "dtype": "int8",
+        "scale_factor": 1,
+        "add_offset": 0,
+        "fill_value": "" 
+    },
+    "DDNS_QC": {
+        "dtype": "int8",
+        "scale_factor": 1,
+        "add_offset": 0,
+        "fill_value": "" 
+    }
+}

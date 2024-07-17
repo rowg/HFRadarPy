@@ -1,0 +1,474 @@
+{
+    "TIME": {
+        "axis": "T",
+        "long_name": "Time",
+        "standard_name": "time",        
+        "units": "days since 1950-01-01T00:00:00Z",
+        "calendar": "standard",
+        "sdn_parameter_name": "Elapsed time (since 1950-01-01T00:00:00Z)",
+        "sdn_parameter_urn": "SDN:P01::ELTJLD01",
+        "sdn_uom_name": "Days",
+        "sdn_uom_urn": "SDN:P06::UTAA",
+        "ancillary_variables": "TIME_QC"
+    },
+    "BEAR": {
+        "axis": "X",
+        "valid_min" : 0.0,
+        "valid_max" : 360.0,
+        "long_name": "Bearing away from instrument",
+        "units": "degree_true",
+        "sdn_parameter_name": "Bearing",
+        "sdn_parameter_urn": "SDN:P01::BEARRFTR",
+        "sdn_uom_name": "Degrees true",
+        "sdn_uom_urn": "SDN:P06::UABB",
+        "ancillary_variables": "POSITION_QC"
+    },
+    "RNGE": {
+        "axis": "Y",
+        "long_name": "Range away from instrument",
+        "units": "km",
+        "sdn_parameter_name": "Range (from fixed reference point) by unspecified GPS system",
+        "sdn_parameter_urn": "SDN:P01::RIFNAX01",
+        "sdn_uom_name": "Kilometres",
+        "sdn_uom_urn": "SDN:P06::ULKM",
+        "ancillary_variables": "POSITION_QC"
+    },
+    "DEPTH": {
+        "axis": "Z",
+        "long_name": "Depth",
+        "standard_name": "depth",
+        "units": "m",        
+        "positive": "down",
+        "reference": "sea_level",
+        "sdn_parameter_name": "Depth below surface of the water body",
+        "sdn_parameter_urn": "SDN:P01::ADEPZZ01",
+        "sdn_uom_name": "Metres",
+        "sdn_uom_urn": "SDN:P06::ULAA",
+        "ancillary_variables": "DEPTH_QC"
+    },
+    "LATITUDE": {
+        "axis": "Y",
+        "standard_name": "latitude",
+        "long_name": "Latitude",
+        "units": "degree_north",
+        "valid_min": -90.0,
+        "valid_max": 90.0,
+        "sdn_parameter_name": "Latitude north",
+        "sdn_parameter_urn": "SDN:P01::ALATZZ01",
+        "sdn_uom_name": "Degrees north",
+        "sdn_uom_urn": "SDN:P06::DEGN",
+        "grid_mapping": "crs",
+        "ancillary_variables": "POSITION_QC"
+    },
+    "LONGITUDE": {
+        "axis": "X",
+        "standard_name": "longitude",
+        "long_name": "Longitude",
+        "units": "degree_east",
+        "valid_min": -180.0,
+        "valid_max": 180.0,
+        "sdn_parameter_name": "Longitude east",
+        "sdn_parameter_urn": "SDN:P01::ALONZZ01",
+        "sdn_uom_name": "Degrees east",
+        "sdn_uom_urn": "SDN:P06::DEGE",
+        "grid_mapping": "crs",
+        "ancillary_variables": "POSITION_QC"
+    },
+    "crs": {
+        "grid_mapping_name": "latitude_longitude",
+        "epsg_code": "EPSG:4326",
+        "semi_major_axis": 6378137.0,
+        "inverse_flattening": 298.257223563
+    },
+    "RDVA": {
+        "valid_min": -10,
+        "valid_max": 10,
+        "standard_name": "radial_sea_water_velocity_away_from_instrument",
+        "units": "m s-1",
+        "long_name": "Radial sea water velocity away from instrument",
+        "sdn_parameter_name": "Speed of water current in the water body by high frequency radar and cell averaging",
+        "sdn_parameter_urn": "SDN:P01::HFRDCRSP",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag OWTR_QC MDFL_QC CSPD_QC VART_QC RDCT_QC",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "DRVA": {
+        "valid_min": 0.0,
+        "valid_max": 360.0,
+        "standard_name": "direction_of_radial_vector_away_from_instrument",
+        "long_name": "Direction of radial vector away from instrument",
+        "units": "degree_true",
+        "sdn_parameter_name": "Direction (from) of radial vector relative to instrument and True North in the water body by high frequency radar",
+        "sdn_parameter_urn": "SDN:P01::HFRVWD01",
+        "sdn_uom_name": "Degrees True",
+        "sdn_uom_urn": "SDN:P06::UABB",
+        "ancillary_variables": "QCflag OWTR_QC MDFL_QC AVRB_QC RDCT_QC",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "EWCT": {
+        "valid_min": -10,
+        "valid_max": 10,
+        "standard_name": "surface_eastward_sea_water_velocity",
+        "long_name": "Surface eastward sea water velocity",
+        "units": "m s-1",
+        "sdn_parameter_name": "Eastward velocity of water current in the water body",
+        "sdn_parameter_urn": "SDN:P01::LCEWZZ01",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag OWTR_QC MDFL_QC CSPD_QC VART_QC AVRB_QC RDCT_QC",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "NSCT": {
+        "valid_min": -10,
+        "valid_max": 10,
+        "standard_name": "surface_northward_sea_water_velocity",
+        "long_name": "Surface northward sea water velocity",
+        "units": "m s-1",
+        "sdn_parameter_name": "Northward current velocity in the water body",
+        "sdn_parameter_urn": "SDN:P01::LCNSZZ01",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag OWTR_QC MDFL_QC CSPD_QC VART_QC AVRB_QC RDCT_QC",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "MAXV": {
+        "long_name": "Radial sea water velocity away from instrument maximum",
+        "standard_name": "radial_sea_water_velocity_away_from_instrument",
+        "valid_min": -10,
+        "valid_max": 10,
+        "units": "m s-1",
+        "sdn_parameter_name": "Speed of water current in the water body by high frequency radar and cell averaging",
+        "sdn_parameter_urn": "SDN:P01::HFRDCRSP",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag MDFL_QC CSPD_QC VART_QC",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "MINV": {
+        "long_name": "Radial sea water velocity away from instrument minimum",
+        "standard_name": "radial_sea_water_velocity_away_from_instrument",
+        "valid_min": -10,
+        "valid_max": 10,
+        "units": "m s-1",
+        "sdn_parameter_name": "Speed of water current in the water body by high frequency radar and cell averaging",
+        "sdn_parameter_urn": "SDN:P01::HFRDCRSP",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag MDFL_QC CSPD_QC VART_QC",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "ESPC": {
+        "long_name": "Radial standard deviation of current velocity over the scatter patch",
+        "valid_min": -32,
+        "valid_max": 32,
+        "units": "m s-1",
+        "sdn_parameter_name": "",
+        "sdn_parameter_urn": "",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag VART_QC",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "ETMP": {
+        "long_name": "Radial standard deviation of current velocity over coverage period",
+        "valid_min": -32,
+        "valid_max": 32,
+        "units": "m s-1",
+        "sdn_parameter_name": "",
+        "sdn_parameter_urn": "",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag VART_QC",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "HCSS": {
+        "long_name": "Radial variance of current velocity over coverage period",
+        "valid_min": -10,
+        "valid_max": 10,
+        "units": "m2 s-2",
+        "sdn_parameter_name": "Speed standard deviation of water current in the water body",
+        "sdn_parameter_urn": "SDSAZZ01",
+        "sdn_uom_name": "Square metres per second squared",
+        "sdn_uom_urn": "SDN:P06::SQM2",
+        "ancillary_variables": "QCflag VART_QC",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "EACC": {
+        "long_name": "Radial accuracy of current velocity over coverage period",
+        "valid_min": -10,
+        "valid_max": 10,
+        "units": "m s-1",
+        "sdn_parameter_name": "",
+        "sdn_parameter_urn": "",
+        "sdn_uom_name": "Metres per second",
+        "sdn_uom_urn": "SDN:P06::UVAA",
+        "ancillary_variables": "QCflag VART_QC",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },    
+    "ERSC": {
+        "long_name": "Radial sea water velocity spatial quality count",
+        "valid_min": 0,
+        "valid_max": 127,
+        "units": "1" ,
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" ,
+        "ancillary_variables": "QCflag" ,
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "ERTC": {
+        "long_name": "Radial sea water velocity temporal quality count",
+        "valid_min": 0,
+        "valid_max": 127,
+        "units": "1" ,
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" ,
+        "ancillary_variables": "QCflag" ,
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "XDST": {
+        "long_name": "Eastward distance from instrument",
+        "valid_min": 0,
+        "valid_max": 1000,
+        "units": "km" ,
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Kilometers" ,
+        "sdn_uom_urn": "SDN:P06::ULKM" ,
+        "ancillary_variables": "QCflag OWTR_QC MDFL_QC CSPD_QC VART_QC",
+        "coordinates" : "LATITUDE LONGITUDE"					  
+    },
+    "YDST": {
+        "long_name": "Northward distance from instrument",
+        "valid_min": 0,
+        "valid_max": 1000,
+        "units": "km" ,
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Kilometers" ,
+        "sdn_uom_urn": "SDN:P06::ULKM" ,
+        "ancillary_variables": "QCflag OWTR_QC MDFL_QC CSPD_QC VART_QC",
+        "coordinates" : "LATITUDE LONGITUDE"
+    },
+    "SPRC": {
+        "long_name": "Radial sea water velocity cross spectra range cell",
+        "valid_min": 0,
+        "valid_max": 127,
+        "units": "1" ,
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" ,
+        "ancillary_variables": "QCflag OWTR_QC MDFL_QC CSPD_QC VART_QC" ,
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "SDN_CRUISE": {
+        "long_name": "Grid grouping label"
+    },
+    "SDN_STATION": {
+        "long_name": "Grid label"
+    },
+    "SDN_LOCAL_CDI_ID": {
+        "long_name": "SeaDataNet CDI identifier"
+    },
+    "SDN_EDMO_CODE": {
+        "long_name": "European Directory of Marine Organisations code for the CDI partner",
+        "units": "1"
+    },
+    "SDN_REFERENCES": {
+        "long_name": "Usage metadata reference"
+    },
+    "SDN_XLINK": {
+        "long_name": "External resource linkages"
+    },
+    "NARX": {
+        "long_name": "Number of receive antennas",
+        "valid_min": 0,
+        "valid_max": 127,
+        "units": "1" ,
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" 
+    },
+    "NATX": {
+        "long_name": "Number of transmit antennas",
+        "valid_min": 0,
+        "valid_max": 127,
+        "units": "1" ,
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" 
+    },
+    "SLTR": {
+        "long_name": "Receive antenna latitudes",
+        "standard_name" : "deployment_latitude",
+        "valid_min": -90,
+        "valid_max": 90,
+        "units": "degree_north" ,
+        "sdn_parameter_name": "Latitude north" ,
+        "sdn_parameter_urn": "SDN:P01::ALATZZ01" ,
+        "sdn_uom_name": "Degrees north" ,
+        "sdn_uom_urn": "SDN:P06::DEGN"
+    },
+    "SLNR": {
+        "long_name": "Receive antenna longitudes",
+        "standard_name" : "deployment_longitude",
+        "valid_min": -180,
+        "valid_max": 180,
+        "units": "degree_east" ,
+        "sdn_parameter_name": "Longitude east" ,
+        "sdn_parameter_urn": "SDN:P01::ALONZZ01" ,
+        "sdn_uom_name": "Degrees east" ,
+        "sdn_uom_urn": "SDN:P06::DEGE"
+    },
+    "SLTT": {
+        "long_name": "Transmit antenna latitudes",
+        "standard_name" : "deployment_latitude",
+        "valid_min": -90,
+        "valid_max": 90,
+        "units": "degree_north" ,
+        "sdn_parameter_name": "Latitude north" ,
+        "sdn_parameter_urn": "SDN:P01::ALATZZ01" ,
+        "sdn_uom_name": "Degrees north" ,
+        "sdn_uom_urn": "SDN:P06::DEGN"
+    },
+    "SLNT": {
+        "long_name": "Transmit antenna longitudes",
+        "standard_name" : "deployment_longitude",
+        "valid_min": -180,
+        "valid_max": 180,
+        "units": "degree_east" ,
+        "sdn_parameter_name": "Longitude east" ,
+        "sdn_parameter_urn": "SDN:P01::ALONZZ01" ,
+        "sdn_uom_name": "Degrees east" ,
+        "sdn_uom_urn": "SDN:P06::DEGE"
+    },
+    "SCDR": {
+        "long_name": "Receive antenna codes",
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" 
+    },
+    "SCDT": {
+        "long_name": "Transmit antenna codes",
+        "sdn_parameter_name": "" ,
+        "sdn_parameter_urn": "" ,
+        "sdn_uom_name": "Dimensionless" ,
+        "sdn_uom_urn": "SDN:P06::UUUU" 
+    },
+    "TIME_QC": {
+        "long_name": "Time quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "Quality flagging for temporal coordinate.",
+        "units": "1" 
+    },
+    "POSITION_QC": {
+        "long_name": "Position quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "Quality flagging for position coordinates.",
+        "units": "1" ,
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "DEPTH_QC": {
+        "long_name": "Depth quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "Quality flagging for depth coordinate.",
+        "units": "1" 
+    },
+    "QCflag": {
+        "long_name": "Overall quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1" ,
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "OWTR_QC": {
+        "long_name": "Over-water quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1" ,
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "MDFL_QC": {
+        "long_name": "Median filter quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1" ,
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "VART_QC": {
+        "long_name": "Variance threshold quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1" ,
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "CSPD_QC": {
+        "long_name": "Velocity threshold quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1" ,
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "AVRB_QC": {
+        "long_name": "Average radial bearing quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    },
+    "RDCT_QC": {
+        "long_name": "Radial count quality flag",
+        "conventions" : "EuroGOOS European HFR Node",
+        "valid_min": 0,
+        "valid_max": 9,
+        "flag_values" : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "flag_meanings" : "no_qc_performed good_data probably_good_data bad_data_that_are_potentially_correctable bad_data value_changed value_below_detection nominal_value interpolated_value missing_value",
+        "comment" : "",
+        "units": "1",
+        "coordinates" : "TIME DEPTH LATITUDE LONGITUDE"
+    }
+}
