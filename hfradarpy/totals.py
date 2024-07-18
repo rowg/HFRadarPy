@@ -11,6 +11,8 @@ from shapely.geometry import Point
 import geopandas as gpd
 import re
 import io
+import os
+from pathlib import Path
 from hfradarpy.common import fileParser, addBoundingBoxMetadata
 from collections import OrderedDict
 from hfradarpy.calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, createLonLatGridFromTopLeftPointWera
@@ -278,7 +280,7 @@ def combineRadials(rDF,gridGS,sRad,gRes,tStp,minContrSites=2):
         Tcomb.data[['VELU', 'VELV','VELO','HEAD','UQAL','VQAL','CQAL','GDOP','NRAD']] = totData
         
         # Mask out vectors on land
-        Tcomb.mask_over_land()
+        Tcomb.mask_over_land(subset=True)
         
         # Get the indexes of grid cells without total vectors
         indexNoVec = Tcomb.data[Tcomb.data['VELU'].isna()].index
@@ -442,39 +444,45 @@ class Total(fileParser):
         self.metadata['GreatCircle'] = ''.join(gridGS.crs.ellipsoid.name.split()) + ' ' + str(gridGS.crs.ellipsoid.semi_major_metre) + '  ' + str(gridGS.crs.ellipsoid.inverse_flattening)
 
     
-    def mask_over_land(self, subset=True):
+    def mask_over_land(self, subset=False, res='high'):
         """
         This function masks the total vectors lying on land.        
         Total vector coordinates are checked against a reference file containing information 
         about which locations are over land or in an unmeasurable area (for example, behind an 
         island or point of land). 
-        The GeoPandas "naturalearth_lowres" is used as reference.        
-        The native CRS of the Total is used for distance calculations.
-        If "subset"  option is set to True, the total vectors lying on land are removed.
+        The Natural Earth public domain maps are used as reference.
+        If "res" option is set to "high", the map with 10 m resolution is used, otherwise the map with 110 m resolution is used.
+        The EPSG:4326 CRS is used for distance calculations.
+        If "subset" option is set to True, the total vectors lying on land are removed.
         
         INPUT:
             subset: option enabling the removal of total vectors on land (if set to True)
+            res: resolution of the www.naturalearthdata.com dataset used to perform the masking; None or 'low' or 'high'. Defaults to 'high'.
             
         OUTPUT:
             waterIndex: list containing the indices of total vectors lying on water.
         """
         # Load the reference file (GeoPandas "naturalearth_lowres")
-        land = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
-        # land = land[land['continent'] == 'North America']
+        mask_dir = Path(__file__).parent.with_name(".hfradarpy")
+        if (res == 'high'):
+            maskfile = os.path.join(mask_dir, 'ne_10m_admin_0_countries.shp')
+        else:
+            maskfile = os.path.join(mask_dir, 'ne_110m_admin_0_countries.shp')
+        land = gpd.read_file(maskfile)
 
         # Build the GeoDataFrame containing total points
         geodata = gpd.GeoDataFrame(
             self.data[['LOND', 'LATD']],
-            crs=land.crs.srs.upper(),
+            crs="EPSG:4326",
             geometry=[
                 Point(xy) for xy in zip(self.data.LOND.values, self.data.LATD.values)
             ]
         )
         # Join the GeoDataFrame containing total points with GeoDataFrame containing leasing areas
-        geodata = gpd.tools.sjoin(geodata, land, how='left', predicate='intersects')
+        geodata = gpd.sjoin(geodata.to_crs(4326), land.to_crs(4326), how="left", predicate="intersects")
 
         # All data in the continent column that lies over water should be nan.
-        waterIndex = geodata['continent'].isna()
+        waterIndex = geodata['CONTINENT'].isna()
 
         if subset:
             # Subset the data to water only
