@@ -67,7 +67,7 @@ def velocityMedianInDistLimits(cell,radData,distLim,g):
 
 ###### COMMENT FROM LORENZO: ######
 ######I WOULD REMOVE THIS FUNCTION FROM radials.py FILE AND PUT IT IN A HIGHER LEVEL SCRIPT - ANYWAY, IT SEEMS TO BE UNUSED IN THE TOOLBOX ######
-def qc_qartod_radial_file(radial_file, qc_values=None, export=None, save_path=None, clean=False, clean_path=None):
+def qc_radial_file(radial_file, qc_values=None, export=None, save_path=None, clean=False, clean_path=None):
     """
     Main function to parse and qc radial files.
 
@@ -196,9 +196,9 @@ def qc_qartod_radial_file(radial_file, qc_values=None, export=None, save_path=No
                 if export == "radial":
                     rclean.to_ruv(os.path.join(clean_path, rclean.file_name))
                 elif export == "netcdf-tabular":
-                    rclean.to_netcdf(os.path.join(save_path, rclean.file_name), "tabular", prepend_extension=True)
+                    rclean.to_netcdf(os.path.join(clean_path, rclean.file_name), "tabular", prepend_extension=True)
                 elif export == "netcdf-gridded":
-                    rclean.to_netcdf(os.path.join(save_path, rclean.file_name), "gridded", prepend_extension=True)
+                    rclean.to_netcdf(os.path.join(clean_path, rclean.file_name), "gridded", prepend_extension=True)
         else:
             return r
 
@@ -731,11 +731,15 @@ class Radial(fileParser):
         ds = ds.drop_vars(["LOND", "LATD", "BEAR", "RNGE"])
 
         # Assign header data to global attributes
+        # convert QCTest dictionary to a list for NetCDF conversion
+        if 'QCTest' in self.metadata:
+            self.metadata["QCTest"] = list(self.metadata["QCTest"].values())
         ds = ds.assign_attrs(self.metadata)
 
         if enhance is True:
             ds = self.enhance_xarray(ds)
             ds = xr.decode_cf(ds)
+
         return ds
 
     def _to_xarray_tabular(self, enhance=False):
@@ -767,6 +771,9 @@ class Radial(fileParser):
         # plt.plot(ds.lon, ds.lat, 'bo', ds.LOND.squeeze(), ds.LATD.squeeze(), 'rx')
 
         # Assign header data to global attributes
+        # convert QCTest dictionary to a list for NetCDF conversion
+        if 'QCTest' in self.metadata:
+            self.metadata["QCTest"] = list(self.metadata["QCTest"].values())
         ds = ds.assign_attrs(self.metadata)
 
         if enhance is True:
@@ -1944,7 +1951,7 @@ class Radial(fileParser):
                                 f.write('%QCFlagDefinitions: 1=pass 2=not_evaluated 3=suspect 4=fail 9=missing_data\n')
                                 f.write('%QCTestFormat: "test_name [qc_thresholds]: test_result"\n')
 
-                                for test in self.metadata["QCTest"]:
+                                for test in self.metadata["QCTest"].values():
                                     f.write("%QCTest: {}\n".format(test))
                             f.write("%{}: {}\n".format(table_key, table_value))
                         elif table_key == "TableColumns":
@@ -2649,7 +2656,7 @@ class Radial(fileParser):
 
         # generate dictionary of executed qc tests found in the header
         executed = dict()
-        for b in [x.split("-")[0].strip() for x in self.metadata["QCTest"]]:
+        for b in [x.split("-")[0].strip() for x in self.metadata["QCTest"].values()]:
             i = b.split(" ")
             executed[i[0]] = re.sub(r"[()]", "", i[1])
 
