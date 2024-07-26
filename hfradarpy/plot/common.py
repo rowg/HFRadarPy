@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import pandas as pd
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from hfradarpy.common import create_dir
+import os
 import cartopy.crs as ccrs
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 import cartopy.feature as cfeature
@@ -110,7 +110,7 @@ def plot_common(
     plt.rcParams["figure.figsize"] = fig_size
 
     if output_file is not None:
-        create_dir(str(Path(output_file).parent))
+        os.makedirs(str(Path(output_file).parent), exist_ok=True)
         resoluton = 300  # plot resolution in DPI
         plt.savefig(output_file, dpi=resoluton, bbox_inches="tight", pad_inches=0.1)
         plt.close("all")
