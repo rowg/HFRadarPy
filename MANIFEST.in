@@ -1,2 +1,3 @@
 include versioneer.py
 include hfradarpy/_version.py
+recursive-include .hfradarpy *

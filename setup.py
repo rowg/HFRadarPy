@@ -55,7 +55,11 @@ setup(
     include_package_data=True,
     keywords="hfradarpy",
     name="hfradarpy",
-    packages=find_packages(include=["hfradarpy", "hfradarpy.*"]),
+    packages=find_packages(include=["hfradarpy", "hfradarpy.*", ".hfradarpy"]),
+    package_data={
+        # Include all files in the hidden .hfradarpy directory
+        ".hfradarpy": ["*"],  # You can specify patterns if needed (e.g., ["*.json", "*.cfg"]).
+    },
     test_suite="tests",
     tests_require=test_requirements,
     url="https://github.com/rucool/hfradarpy",

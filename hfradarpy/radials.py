@@ -329,7 +329,7 @@ class Radial(CTFParser):
         else:
             logging.info("Masking radials over land")
 
-            mask_dir = Path(__file__).parent.with_name(".hfradarpy")
+            mask_dir = Path(__file__).with_name(".hfradarpy")
             if (res == 'high'):
                 maskfile = os.path.join(mask_dir, 'ne_10m_admin_0_countries.shp')
             else:
