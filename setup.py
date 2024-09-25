@@ -52,14 +52,14 @@ setup(
     license="MIT license",
     long_description_content_type="text/x-rst",
     long_description=readme + "\n\n" + history,
-    include_package_data=True,
     keywords="hfradarpy",
     name="hfradarpy",
-    packages=find_packages(include=["hfradarpy", "hfradarpy.*", ".hfradarpy"]),
+    packages=find_packages(include=["hfradarpy", "hfradarpy.*"]),
     package_data={
-        # Include all files in the hidden .hfradarpy directory
-        ".hfradarpy": ["*"],  # You can specify patterns if needed (e.g., ["*.json", "*.cfg"]).
+        # Include all files in the .hfradarpy directory
+        "hfradarpy": [".hfradarpy/*"],
     },
+    include_package_data=True,
     test_suite="tests",
     tests_require=test_requirements,
     url="https://github.com/rucool/hfradarpy",
