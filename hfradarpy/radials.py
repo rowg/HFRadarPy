@@ -1348,7 +1348,7 @@ class Radial(CTFParser):
         )
         self.append_to_tableheader(test_str, "(flag)")
 
-    def qc_qartod_valid_location(self, use_mask=False, res='low'):
+    def qc_qartod_valid_location(self, use_mask=False, res='low', angseg = None):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -1364,41 +1364,94 @@ class Radial(CTFParser):
 
         Args:
             use_mask (bool, optional): Use mask_over_land function in addition to manufacturers flags. Defaults to False.
-
-        """
+            res (string, optional): either 'low' or 'high', Defaults to low.
+            angseg (array of dictionaries, optional): Used to define areas (segments) for invalid locations.
+                Each array element is a dictionary defined by the following keys:
+                range_min (int) :
+                    Minimum range given in kilometers
+                range_max (int) :
+                    Maximum range given in kilometers
+                bearingTrue_start (int) :
+                    Start bearing of a segment (The angular segment will start at this value given in
+                    degrees True and it will extend in a CLOCKWISE direction until it reaches the stop bearing.)
+                bearingTrue_stop (int) :
+                    Stop bearing of a segment (The angular segment begins at the start bearing and extends CLOCKWISE
+                    until it reaches this value given in degrees True.)
+       """
 
         test_str = "Q203"
         flag_column = "VFLG"
+        applied_test_str = ''
+        success = 0  # start with none of the tests running successfully
+
+        self.data[test_str] = 1  # add new column of passing values
 
         if flag_column in self.data:
-            self.data[test_str] = 1  # add new column of passing values
-            self.data.loc[(self.data[flag_column] == 128), test_str] = 4  # set to 4 where land is flagged (manufacturer)
-            if use_mask:
-                self.data.loc[~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
-            self.metadata["QCTest"].append(
-                (
-                    f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{flag_column}==128]: "
-                    f"See results in column {test_str} below"
-                )
-            )
-            self.append_to_tableheader(test_str, "(flag)")
-
-        else:
             try:
-                logger.warning(f"qc_qartod_valid_location, no {flag_column} column, applying land mask option")
-                self.data[test_str] = 1  # add new column of passing values
-                if use_mask:
-                    self.data.loc[~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
-                    self.metadata["QCTest"].append(
-                        (
-                            f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[No {flag_column}, uses land mask]: "
-                            f"See results in column {test_str} below"
-                        )
-                    )
-                    self.append_to_tableheader(test_str, "(flag)")
-
+                self.data.loc[(self.data[flag_column] == 128), test_str] = 4  # set to 4 where SeaSonde AngSeg is flagged (manufacturer)
+                applied_test_str += f"({flag_column}==128)"
+                success = 1
             except:
-                logger.warning(f"qc_qartod_valid_location did not run, no {flag_column} column, land mask either not used or not successfully applied")
+                logger.warning(f"qc_qartod_valid_location with VFLG = 128 did not run successfully")
+
+        if use_mask:
+            try:
+                self.data.loc[~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
+                applied_test_str += f"(land mask {res} res)"
+                success = 1
+            except:
+                logger.warning(f"qc_qartod_valid_location hfradarpy land mask did not run successfully")
+
+        if angseg:
+            try:
+                for seg in angseg:
+                    # find locations of radials in specified range and bearing limits and assign fail flags
+                    if seg['bearingTrue_stop'] - seg['bearingTrue_start'] > 0:
+                        try:
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= seg['bearingTrue_start']) & (
+                                        self.data["BEAR"] <= seg['bearingTrue_stop']), test_str
+                            ] = 4  # set to 4 where hfradarpy angseg sections are flagged
+                            success = 1
+                        except:
+                            logger.warning(f"qc_qartod_valid_location hfradarpy angseg: one segment not applicable or did not run successfully")
+
+                    else:
+                        try:
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= seg['bearingTrue_start']) & (
+                                        self.data["BEAR"] <= 360), test_str
+                            ] = 4  # set to 4 where hfradarpy angseg sections are flagged
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= 0) & (
+                                        self.data["BEAR"] <= seg['bearingTrue_stop']), test_str
+                            ] = 4  # set to 4 where hfradarpy angseg sections are flagged
+                            success = 1
+                        except:
+                            logger.warning(f"qc_qartod_valid_location hfradarpy angseg: one segment not applicable or did not run successfully")
+                applied_test_str += f"(angseg)"
+            except:
+                logger.warning( f"qc_qartod_valid_location hfradarpy angseg not applicable or did not run successfully")
+
+        self.metadata["QCTest"].append(
+            (
+                f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: "
+                f"See results in column {test_str} below"
+            )
+        )
+
+        if success == 0:
+            self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
+            logger.warning(f"qc_qartod_valid_location did not run, no {flag_column} column, land mask and angseg either not used or not successfully applied")
+
+        self.append_to_tableheader(test_str, "(flag)")
+
 
     def qc_qartod_radial_count(self, min_count=150, low_count=300):
         """
