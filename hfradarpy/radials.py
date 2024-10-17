@@ -382,7 +382,7 @@ class Radial(fileParser):
             waterIndex: list containing the indices of radial vectors lying on water.
         """
         # Load the reference file (GeoPandas "naturalearth_lowres")
-        mask_dir = Path(__file__).parent.with_name(".hfradarpy")
+        mask_dir = Path(__file__).with_name(".hfradarpy")
         if (res == 'high'):
             maskfile = os.path.join(mask_dir, 'ne_10m_admin_0_countries.shp')
         else:
@@ -2095,7 +2095,7 @@ class Radial(fileParser):
                 + f"]: See result in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
-    def qc_qartod_valid_location(self, use_mask=False, res='low'):
+    def qc_qartod_valid_location(self, use_mask=False, res='low', angseg = None):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2111,33 +2111,143 @@ class Radial(fileParser):
 
         Args:
             use_mask (bool, optional): Use mask_over_land function in addition to manufacturers flags. Defaults to False.
-
-        """
+            res (string, optional): either 'low' or 'high', Defaults to low.
+            angseg (array of dictionaries, optional): Used to define areas (segments) for invalid locations.
+                Each array element is a dictionary defined by the following keys:
+                range_min (int) :
+                    Minimum range given in kilometers
+                range_max (int) :
+                    Maximum range given in kilometers
+                bearingTrue_start (int) :
+                    Start bearing of a segment (The angular segment will start at this value given in
+                    degrees True and it will extend in a CLOCKWISE direction until it reaches the stop bearing.)
+                bearingTrue_stop (int) :
+                    Stop bearing of a segment (The angular segment begins at the start bearing and extends CLOCKWISE
+                    until it reaches this value given in degrees True.)
+       """
 
         test_str = "Q203"
         flag_column = "VFLG"
+        applied_test_str = ''
+        success = 0  # start with none of the tests running successfully
+
+        self.data[test_str] = 1  # add new column of passing values
 
         if flag_column in self.data:
-            self.data[test_str] = 1  # add new column of passing values
-            self.data.loc[(self.data[flag_column] == 128), test_str] = 4  # set to 4 where land is flagged (manufacturer)
-            if use_mask:
-                self.data.loc[~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
-            self.metadata['QCTest'][test_str] = f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{flag_column}==128]: " \
-            		+ f"See results in column {test_str} below"
-            self.append_to_tableheader(test_str, "(flag)")
-
-        else:
             try:
-                logger.warning(f"qc_qartod_valid_location, no {flag_column} column, applying land mask option")
-                self.data[test_str] = 1  # add new column of passing values
-                if use_mask:
-                    self.data.loc[~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
-                    self.metadata['QCTest'][test_str] = f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[No {flag_column}, uses land mask]: " \
-                    		+ f"See results in column {test_str} below"
-                    self.append_to_tableheader(test_str, "(flag)")
-
+                self.data.loc[(self.data[flag_column] == 128), test_str] = 4  # set to 4 where SeaSonde AngSeg is flagged (manufacturer)
+                applied_test_str += f"({flag_column}==128)"
+                success = 1
             except:
-                logger.warning(f"qc_qartod_valid_location did not run, no {flag_column} column, land mask either not used or not successfully applied")
+                logger.warning(f"qc_qartod_valid_location with VFLG = 128 did not run successfully")
+
+        if use_mask:
+            try:
+                self.data.loc[~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
+                applied_test_str += f"(land mask {res} res)"
+                success = 1
+            except:
+                logger.warning(f"qc_qartod_valid_location hfradarpy land mask did not run successfully")
+
+        if angseg:
+            try:
+                for seg in angseg:
+                    # find locations of radials in specified range and bearing limits and assign fail flags
+                    if seg['bearingTrue_stop'] - seg['bearingTrue_start'] > 0:
+                        try:
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= seg['bearingTrue_start']) & (
+                                        self.data["BEAR"] <= seg['bearingTrue_stop']), test_str
+                            ] = 4  # set to 4 where hfradarpy angseg sections are flagged
+                            success = 1
+                        except:
+                            logger.warning(f"qc_qartod_valid_location hfradarpy angseg: one segment not applicable or did not run successfully")
+
+                    else:
+                        try:
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= seg['bearingTrue_start']) & (
+                                        self.data["BEAR"] <= 360), test_str
+                            ] = 4  # set to 4 where hfradarpy angseg sections are flagged
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= 0) & (
+                                        self.data["BEAR"] <= seg['bearingTrue_stop']), test_str
+                            ] = 4  # set to 4 where hfradarpy angseg sections are flagged
+                            success = 1
+                        except:
+                            logger.warning(f"qc_qartod_valid_location hfradarpy angseg: one segment not applicable or did not run successfully")
+                applied_test_str += f"(angseg)"
+            except:
+                logger.warning( f"qc_qartod_valid_location hfradarpy angseg not applicable or did not run successfully")
+
+        self.metadata["QCTest"].append(
+            (
+                f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: "
+                f"See results in column {test_str} below"
+            )
+        )
+
+        if success == 0:
+            self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
+            logger.warning(f"qc_qartod_valid_location did not run, no {flag_column} column, land mask and angseg either not used or not successfully applied")
+
+        self.append_to_tableheader(test_str, "(flag)")
+
+
+    def qc_qartod_radial_count(self, min_count=150, low_count=300):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        Radial Count (Test 9)
+        Rejects radials in files with low radial counts (poor radial map coverage).
+
+        The number of radials (RCNT) in a radial file must be above a threshold value RCNT_MIN to pass the test and
+        above a value RC_LOW to not be considered suspect. If the number of radials is below the minimum level,
+        it indicates a problem with data collection. In this case, the file should be rejected and none of the
+        radials used for total vector processing.
+
+        Link: https://ioos.noaa.gov/ioos-in-action/manual-real-time-quality-control-high-frequency-radar-surface-current-data/
+
+        Args:
+            min_count (int, optional):
+                Minimum radial count threshold (failure) below which the file should be rejected. Defaults to 150.
+            low_count (int, optional):
+                Low radial count threshold (warning) below which the file should be considered suspect. Defaults to 300.
+        """
+        test_str = "Q204"
+        column_flag = "VFLG"
+
+        # If a vector flag is supplied by the vendor, subset by that first
+        if column_flag in self.data:
+            num_radials = len(self.data[self.data[column_flag] != 128])
+        else:
+            num_radials = len(self.data)
+
+        if num_radials < min_count:
+            radial_count_flag = 4
+        elif (num_radials >= min_count) and (num_radials <= low_count):
+            radial_count_flag = 3
+        elif num_radials > low_count:
+            radial_count_flag = 1
+
+        self.data[test_str] = radial_count_flag
+        self.metadata["QCTest"].append(
+            (
+                f"qc_qartod_radial_count ({test_str}) - Test applies to entire file. Thresholds="
+                "[ "
+                f"failure={min_count} (radials) "
+                f"warning_num={low_count} (radials) "
+                f"<valid_radials={num_radials}> "
+                f"]:  See results in column {test_str} below"
+            )
+        )
+        self.append_to_tableheader(test_str, "(flag)")
 
     def qc_qartod_radial_count(self, min_count=150, low_count=300):
         """
