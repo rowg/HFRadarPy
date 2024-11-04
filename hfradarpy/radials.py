@@ -2186,12 +2186,8 @@ class Radial(fileParser):
             except:
                 logger.warning( f"qc_qartod_valid_location hfradarpy angseg not applicable or did not run successfully")
 
-        self.metadata["QCTest"].append(
-            (
-                f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: "
-                f"See results in column {test_str} below"
-            )
-        )
+        self.metadata["QCTest"][test_str] = f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: " \
+            + f"See results in column {test_str} below"
 
         if success == 0:
             self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
@@ -2199,55 +2195,6 @@ class Radial(fileParser):
 
         self.append_to_tableheader(test_str, "(flag)")
 
-
-    def qc_qartod_radial_count(self, min_count=150, low_count=300):
-        """
-        Integrated Ocean Observing System (IOOS)
-        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
-        Radial Count (Test 9)
-        Rejects radials in files with low radial counts (poor radial map coverage).
-
-        The number of radials (RCNT) in a radial file must be above a threshold value RCNT_MIN to pass the test and
-        above a value RC_LOW to not be considered suspect. If the number of radials is below the minimum level,
-        it indicates a problem with data collection. In this case, the file should be rejected and none of the
-        radials used for total vector processing.
-
-        Link: https://ioos.noaa.gov/ioos-in-action/manual-real-time-quality-control-high-frequency-radar-surface-current-data/
-
-        Args:
-            min_count (int, optional):
-                Minimum radial count threshold (failure) below which the file should be rejected. Defaults to 150.
-            low_count (int, optional):
-                Low radial count threshold (warning) below which the file should be considered suspect. Defaults to 300.
-        """
-        test_str = "Q204"
-        column_flag = "VFLG"
-
-        # If a vector flag is supplied by the vendor, subset by that first
-        if column_flag in self.data:
-            num_radials = len(self.data[self.data[column_flag] != 128])
-        else:
-            num_radials = len(self.data)
-
-        if num_radials < min_count:
-            radial_count_flag = 4
-        elif (num_radials >= min_count) and (num_radials <= low_count):
-            radial_count_flag = 3
-        elif num_radials > low_count:
-            radial_count_flag = 1
-
-        self.data[test_str] = radial_count_flag
-        self.metadata["QCTest"].append(
-            (
-                f"qc_qartod_radial_count ({test_str}) - Test applies to entire file. Thresholds="
-                "[ "
-                f"failure={min_count} (radials) "
-                f"warning_num={low_count} (radials) "
-                f"<valid_radials={num_radials}> "
-                f"]:  See results in column {test_str} below"
-            )
-        )
-        self.append_to_tableheader(test_str, "(flag)")
 
     def qc_qartod_radial_count(self, min_count=150, low_count=300):
         """
