@@ -480,12 +480,20 @@ class Radial(fileParser):
             siteLat = float(self.metadata['Origin'].split()[0])
             siteCode = self.metadata['Site']
         else:
-            siteLon = dms2dd(list(map(int,self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
-            siteLat = dms2dd(list(map(int,self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
-            if self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
-                siteLat = -siteLat
-            if self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
-                siteLon = -siteLon
+            if 'Longitude(dd)OfTheCenterOfTheReceiveArray' in self.metadata.keys():
+                siteLon = float(self.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+                siteLat = float(self.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+                if self.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                    siteLat = -siteLat
+                if self.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                    siteLon = -siteLon
+            elif 'Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray' in self.metadata.keys():
+                siteLon = dms2dd(list(map(int,self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+                siteLat = dms2dd(list(map(int,self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+                if self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                    siteLat = -siteLat
+                if self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                    siteLon = -siteLon
             siteCode = self.metadata['StationName']
         
         # Compute the native map projection coordinates for the stations

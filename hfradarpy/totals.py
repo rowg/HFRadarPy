@@ -13,14 +13,21 @@ import re
 import io
 import os
 from pathlib import Path
-from hfradarpy.common import fileParser, addBoundingBoxMetadata
+from common import fileParser, addBoundingBoxMetadata
 from collections import OrderedDict
-from hfradarpy.calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, createLonLatGridFromTopLeftPointWera
+from calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, createLonLatGridFromTopLeftPointWera
 import json
 import fnmatch
 import warnings
 from mpl_toolkits.basemap import Basemap
 import matplotlib.pyplot as plt
+from matplotlib import colors
+import cartopy
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import cartopy.io.img_tiles as cimgt
+from scipy.spatial import ConvexHull
+import geopy.distance
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +47,408 @@ logger = logging.getLogger(__name__)
 #
 #     ds = xr.concat(totals_dict.values(), 'time')
 #     return ds
+
+def buildUStotal(ts,pts,USxds,networkData,stationData):
+    """
+    This function builds the Total object for the input timestamp from an xarray DataSet
+    containing the gridded total data of a US network.
+    
+    INPUT:
+        ts: timestamp as datetime object
+        pts: Geoseries containing the lon/lat positions of the data geographical grid
+        USxds: xarray DataSet containing gridded total data related to the input timestamp
+        networkData: DataFrame containing the information of the network to which the total belongs
+        stationData: DataFrame containing the information of the radial sites that produced the total
+        
+    OUTPUT:
+        Tus: Total object containing the US network total data
+    """
+       
+    #####
+    # Create the Total object for the input timestamp
+    #####    
+    
+    # Create empty total with grid
+    Tus = Total(grid=pts)
+    
+    # Add timestamp
+    Tus.time = ts
+    
+    # Fill the Total object with data
+    if USxds.u.units.strip() == 'm s-1':
+        Tus.data['VELU'] = USxds.u.values[0,:,:].flatten() * 100
+    elif USxds.u.units.strip() == 'cm s-1':
+        Tus.data['VELU'] = USxds.u.values[0,:,:].flatten() 
+    if USxds.v.units.strip() == 'm s-1':
+        Tus.data['VELV'] = USxds.v.values[0,:,:].flatten() * 100
+    elif USxds.v.units.strip() == 'cm s-1':
+        Tus.data['VELV'] = USxds.v.values[0,:,:].flatten()
+    Tus.data['GDOP'] = USxds.hdop.values[0,:,:].flatten()
+    Tus.data['NRAD'] = USxds.number_of_radials.values[0,:,:].flatten()
+    Tus.data['VELO'] = np.sqrt(Tus.data['VELU']**2 + Tus.data['VELV']**2)
+    Tus.data['HEAD'] = (360 + np.arctan2(Tus.data['VELU'],Tus.data['VELV']) * 180/np.pi) % 360
+    
+    # Set is_wera attribute to False (all velocities are expressed in cm/s)
+    Tus.is_wera = False
+    
+    # Set is_combined attribute to False
+    Tus.is_combined = False
+    
+    # Get the indexes of rows without measurements (i.e. containing nan values)
+    indexNames = Tus.data.loc[pd.isna(Tus.data['VELU']), :].index
+    # Delete these row indexes from DataFrame
+    Tus.data.drop(indexNames , inplace=True)
+    Tus.data.reset_index(level=None, drop=False, inplace=True)
+    
+    # Get the list of contributing radial files
+    contrRadFilesDF = pd.Series(data=USxds.radial_metadata.files_loaded.split('\n'))    
+    # Add contributing radial sites
+    contrRadSites = contrRadFilesDF.apply(lambda x: x.split('_')[-5]).to_list()
+    # Keep only radial sites registered on the datbase
+    contrRadSites = stationData.loc[stationData['station_id'].isin(contrRadSites)]
+    
+    # Insert contributing radial sites into Total object
+    Tus.site_source = pd.DataFrame(index=contrRadSites.index,columns=['#', 'Name', 'Lat', 'Lon', 'Coverage(s)', 'RngStep(km)', 'Pattern', 'AntBearing(NCW)'])
+    Tus.site_source['#'] = contrRadSites.index
+    Tus.site_source['Name'] = contrRadSites.loc[:]['station_id']
+    Tus.site_source['Lat'] = contrRadSites.loc[:]['site_lat']
+    Tus.site_source['Lon'] = contrRadSites.loc[:]['site_lon']
+    
+    # Get spatial resolution from TDS url
+    if 'Resolution' in networkData.loc[0]['TDS_root_url'].split('_'):
+        sptRes = networkData.loc[0]['TDS_root_url'].split('_')[networkData.loc[0]['TDS_root_url'].split('_').index('Resolution')-1]
+        sptRes = re.sub(r"([0-9]+(\.[0-9]+)?)",r" \1 ", sptRes).strip()
+    elif 'hourly' in networkData.loc[0]['TDS_root_url'].split('/'):
+        sptRes = networkData.loc[0]['TDS_root_url'].split('/')[networkData.loc[0]['TDS_root_url'].split('/').index('hourly')-1]
+        sptRes = re.sub(r"([0-9]+(\.[0-9]+)?)",r" \1 ", sptRes).strip()
+    else:
+        sptRes = None
+        
+    # Add metadata
+    Tus.metadata['TimeZone'] = '"UTC" +0.000 0 "GMT"'
+    Tus.metadata['AveragingRadius'] = str(USxds.processing_parameters.grid_search_radius) + ' ' + USxds.processing_parameters.grid_search_radius_units
+    Tus.metadata['CurrentVelocityLimit'] = str(USxds.processing_parameters.max_rtv_speed) + ' ' + USxds.processing_parameters.max_rtv_speed_units
+    Tus.metadata['GridAxisOrientation'] = '0.0 DegNCW'
+    if sptRes:
+        Tus.metadata['GridSpacing'] = sptRes
+    Tus = addBoundingBoxMetadata(Tus,USxds.attrs['geospatial_lon_min'],USxds.attrs['geospatial_lon_max'],USxds.attrs['geospatial_lat_min'],USxds.attrs['geospatial_lat_max'])
+                                                 
+    return Tus
+
+def convertEHNtoINSTACtotalDatamodel(tDS, networkData, stationData, version):
+    """
+    This function applies the Copernicus Marine Service data model to the input xarray
+    dataset containing total (either non temporally aggregated or temporally aggregated)
+    data. The input dataset must follow the European standard data model.
+    Variable data types and data packing information are collected from
+    "Data_Models/CMEMS_IN_SITU_TAC/Totals/Total_Data_Packing.json" file.
+    Variable attribute schema is collected from 
+    "Data_Models/CMEMS_IN_SITU_TAC/Totals/Total_Variables.json" file.
+    Global attribute schema is collected from 
+    "Data_Models/CMEMS_IN_SITU_TAC/Global_Attributes.json" file.
+    Global attributes are created starting from the input dataset and from 
+    DataFrames containing the information about HFR network and radial station
+    read from the EU HFR NODE database.
+    The function returns an xarray dataset compliant with the Copernicus Marine Service 
+    In Situ TAC data model.
+    
+    INPUT:
+        tDS: xarray DataSet containing total (either non temporally aggregated or temporally aggregated)
+             data.
+        networkData: DataFrame containing the information of the network to which the total belongs
+        stationData: DataFrame containing the information of the radial sites that produced the total
+        version: version of the data model        
+        
+    OUTPUT:
+        instacDS: xarray dataset compliant with the Copernicus Marine Service In Situ TAC data model
+    """
+    # Get data packing information per variable
+    f = open('Data_Models/CMEMS_IN_SITU_TAC/Totals/Total_Data_Packing.json')
+    dataPacking = json.loads(f.read())
+    f.close()
+    
+    # Get variable attributes
+    f = open('Data_Models/CMEMS_IN_SITU_TAC/Totals/Total_Variables.json')
+    totVariables = json.loads(f.read())
+    f.close()
+    
+    # Get global attributes
+    f = open('Data_Models/CMEMS_IN_SITU_TAC/Global_Attributes.json')
+    globalAttributes = json.loads(f.read())
+    f.close()
+    
+    # Create the output dataset
+    instacDS = tDS
+    instacDS.encoding = {}
+    
+    # Evaluate time coverage start, end, resolution and duration
+    timeCoverageStart = pd.Timestamp(instacDS['TIME'].values.min()).to_pydatetime() - relativedelta(minutes=networkData.iloc[0]['temporal_resolution']/2)
+    timeCoverageEnd = pd.Timestamp(instacDS['TIME'].values.max()).to_pydatetime() + relativedelta(minutes=networkData.iloc[0]['temporal_resolution']/2)
+    
+    timeCoverageDuration = pd.Timedelta(timeCoverageEnd - timeCoverageStart).isoformat()
+    
+    # Build the file id
+    ID = 'GL_TV_HF_' + tDS.attrs['platform_code'] + '_' + pd.Timestamp(instacDS['TIME'].values.max()).to_pydatetime().strftime('%Y%m%d')
+    
+    # Get the TIME variable values
+    xdsTime = instacDS.TIME.values
+    # Convert them to datetime datetimes
+    dtTime = np.array([pd.Timestamp(t).to_pydatetime() for t in xdsTime])
+    
+    # Evaluate timestamp as number of days since 1950-01-01T00:00:00Z
+    timeDelta = dtTime - dt.datetime.strptime('1950-01-01T00:00:00Z','%Y-%m-%dT%H:%M:%SZ')
+    ncTime = np.array([t.days + t.seconds / (60*60*24) for t in timeDelta])
+    
+    # Replace TIME variable values with timestamp as number of days since 1950-01-01T00:00:00Z
+    instacDS = instacDS.assign_coords(TIME=ncTime)
+    
+    # Rename DEPTH_QC variable to DEPH_QC
+    instacDS = instacDS.rename({'DEPTH_QC':'DEPH_QC'})  
+    
+    # Add DEPH variable
+    instacDS['DEPH'] = xr.DataArray(0,
+                             dims={'DEPTH': 1},
+                             coords={'DEPTH': [0]})
+    
+    # Remove DEPTH variable
+    instacDS = instacDS.drop_vars('DEPTH')
+    
+    # Remove crs variable (it's time-varying because of the temporal aggregation)
+    instacDS = instacDS.drop_vars('crs')
+    
+    # Add time-independent crs variable
+    instacDS['crs'] = xr.DataArray(int(0), )
+    
+    # Remove encoding for data variables
+    for vv in instacDS:
+        if 'char_dim_name' in instacDS[vv].encoding.keys():
+            instacDS[vv].encoding = {'char_dim_name': instacDS[vv].encoding['char_dim_name']}
+        else:
+            instacDS[vv].encoding = {}
+            
+    # Remove attributes and encoding from coordinates variables
+    for cc in instacDS.coords:
+        instacDS[cc].attrs = {}
+        instacDS[cc].encoding = {}
+        
+    # Add units and calendar to encoding for coordinate TIME
+    instacDS['TIME'].encoding['units'] = 'days since 1950-01-01T00:00:00Z'
+    instacDS['TIME'].encoding['calendar'] = 'standard'
+    
+    # Add data variable attributes to the DataSet
+    for vv in instacDS:
+        instacDS[vv].attrs = totVariables[vv]
+        
+    # Add coordinate variable attributes to the DataSet
+    for cc in instacDS.coords:
+        instacDS[cc].attrs = totVariables[cc]
+    
+    # Update QC variable attribute "comment" for inserting test thresholds
+    for qcv in list(tDS.keys()):
+        if 'QC' in qcv:
+            if not qcv in ['TIME_QC', 'POSITION_QC', 'DEPTH_QC']:
+                instacDS[qcv].attrs['comment'] = instacDS[qcv].attrs['comment'] + ' ' + tDS[qcv].attrs['comment']            
+            
+    # Update QC variable attribute "flag_values" for assigning the right data type
+    for qcv in instacDS:
+        if 'QC' in qcv:
+            instacDS[qcv].attrs['flag_values'] = list(np.int_(instacDS[qcv].attrs['flag_values']).astype(dataPacking[qcv]['dtype']))
+        
+    # Fill global attributes
+    globalAttributes['site_code'] = tDS.attrs['site_code']
+    globalAttributes['platform_code'] = tDS.attrs['platform_code']
+    globalAttributes['platform_name'] = globalAttributes['platform_code']
+    globalAttributes['doa_estimation_method'] = tDS.attrs['doa_estimation_method'].replace(',',';')
+    globalAttributes['calibration_type'] = tDS.attrs['calibration_type'].replace(',',';')
+    globalAttributes['last_calibration_date'] = tDS.attrs['last_calibration_date'].replace(',',';')
+    globalAttributes['calibration_link'] = tDS.attrs['calibration_link'].replace(',',';')
+    globalAttributes['summary'] = tDS.attrs['summary']    
+    globalAttributes['institution'] = tDS.attrs['institution'].replace(',',';')
+    globalAttributes['institution_edmo_code'] = tDS.attrs['institution_edmo_code'].replace(', ',' ')
+    globalAttributes['institution_references'] = tDS.attrs['institution_references'].replace(', ',' ')
+    # globalAttributes['institution_abreviated'] = tDS.attrs['institution_abreviated'].replace(', ',' ')
+    # globalAttributes['institution_country'] = tDS.attrs['institution_country'].replace(',',';')
+    globalAttributes['id'] = ID
+    globalAttributes['project'] = tDS.attrs['project']
+    globalAttributes['comment'] = tDS.attrs['comment']
+    globalAttributes['network'] = tDS.attrs['network']
+    globalAttributes['geospatial_lat_min'] = tDS.attrs['geospatial_lat_min']
+    globalAttributes['geospatial_lat_max'] = tDS.attrs['geospatial_lat_max']
+    globalAttributes['geospatial_lat_resolution'] = tDS.attrs['geospatial_lat_resolution']   
+    globalAttributes['geospatial_lon_min'] = tDS.attrs['geospatial_lon_min']
+    globalAttributes['geospatial_lon_max'] = tDS.attrs['geospatial_lon_max']
+    globalAttributes['geospatial_lon_resolution'] = tDS.attrs['geospatial_lon_resolution']   
+    globalAttributes['geospatial_vertical_max'] = tDS.attrs['geospatial_vertical_max']
+    globalAttributes['geospatial_vertical_resolution'] = tDS.attrs['geospatial_vertical_resolution']  
+    globalAttributes['spatial_resolution'] = str(networkData.iloc[0]['grid_resolution'])
+    globalAttributes['time_coverage_start'] = timeCoverageStart.strftime('%Y-%m-%dT%H:%M:%SZ')
+    globalAttributes['time_coverage_end'] = timeCoverageEnd.strftime('%Y-%m-%dT%H:%M:%SZ')
+    globalAttributes['time_coverage_resolution'] = tDS.attrs['time_coverage_resolution']
+    globalAttributes['time_coverage_duration'] = timeCoverageDuration
+    globalAttributes['area'] = tDS.attrs['area']    
+    globalAttributes['citation'] += networkData.iloc[0]['citation_statement']
+    globalAttributes['processing_level'] = tDS.attrs['processing_level']
+    globalAttributes['manufacturer'] = tDS.attrs['manufacturer']
+    globalAttributes['sensor_model'] = tDS.attrs['manufacturer']
+    
+    creationDate = dt.datetime.utcnow()
+    globalAttributes['date_created'] = creationDate.strftime('%Y-%m-%dT%H:%M:%SZ')
+    globalAttributes['date_modified'] = creationDate.strftime('%Y-%m-%dT%H:%M:%SZ')
+    globalAttributes['history'] = 'Data measured from ' + timeCoverageStart.strftime('%Y-%m-%dT%H:%M:%SZ') + ' to ' \
+                                + timeCoverageEnd.strftime('%Y-%m-%dT%H:%M:%SZ') + '. netCDF file created at ' \
+                                + creationDate.strftime('%Y-%m-%dT%H:%M:%SZ') + ' by the European HFR Node.'        
+    
+    # Add global attributes to the DataSet
+    instacDS.attrs = globalAttributes
+        
+    # Encode data types, data packing and _FillValue for the data variables of the DataSet
+    for vv in instacDS:
+        if vv in dataPacking:
+            if 'dtype' in dataPacking[vv]:
+                instacDS[vv].encoding['dtype'] = dataPacking[vv]['dtype']
+            if 'scale_factor' in dataPacking[vv]:
+                instacDS[vv].encoding['scale_factor'] = dataPacking[vv]['scale_factor']    
+            if 'add_offset' in dataPacking[vv]:
+                instacDS[vv].encoding['add_offset'] = dataPacking[vv]['add_offset']
+            if 'fill_value' in dataPacking[vv]:
+                if not vv in ['SCDR', 'SCDT']:
+                    instacDS[vv].encoding['_FillValue'] = netCDF4.default_fillvals[np.dtype(dataPacking[vv]['dtype']).kind + str(np.dtype(dataPacking[vv]['dtype']).itemsize)]
+                else:
+                    instacDS[vv].encoding['_FillValue'] = b' '
+                    
+            else:
+                instacDS[vv].encoding['_FillValue'] = None
+                
+    # Update valid_min and valid_max variable attributes according to data packing for data variables
+    for vv in instacDS:
+        if 'valid_min' in totVariables[vv]:
+            if ('scale_factor' in dataPacking[vv]) and ('add_offset' in dataPacking[vv]):
+                instacDS[vv].attrs['valid_min'] = np.float_(((totVariables[vv]['valid_min'] - dataPacking[vv]['add_offset']) / dataPacking[vv]['scale_factor'])).astype(dataPacking[vv]['dtype'])
+            else:
+                instacDS[vv].attrs['valid_min'] = np.float_(totVariables[vv]['valid_min']).astype(dataPacking[vv]['dtype'])
+        if 'valid_max' in totVariables[vv]:             
+            if ('scale_factor' in dataPacking[vv]) and ('add_offset' in dataPacking[vv]):
+                instacDS[vv].attrs['valid_max'] = np.float_(((totVariables[vv]['valid_max'] - dataPacking[vv]['add_offset']) / dataPacking[vv]['scale_factor'])).astype(dataPacking[vv]['dtype'])
+            else:
+                instacDS[vv].attrs['valid_max'] = np.float_(totVariables[vv]['valid_max']).astype(dataPacking[vv]['dtype'])
+                
+    # Encode data types, data packing and _FillValue for the coordinate variables of the DataSet
+    for cc in instacDS.coords:
+        if cc in dataPacking:
+            if 'dtype' in dataPacking[cc]:
+                instacDS[cc].encoding['dtype'] = dataPacking[cc]['dtype']
+            if 'scale_factor' in dataPacking[cc]:
+                instacDS[cc].encoding['scale_factor'] = dataPacking[cc]['scale_factor']                
+            if 'add_offset' in dataPacking[cc]:
+                instacDS[cc].encoding['add_offset'] = dataPacking[cc]['add_offset']
+            if 'fill_value' in dataPacking[cc]:
+                instacDS[cc].encoding['_FillValue'] = netCDF4.default_fillvals[np.dtype(dataPacking[cc]['dtype']).kind + str(np.dtype(dataPacking[cc]['dtype']).itemsize)]
+            else:
+                instacDS[cc].encoding['_FillValue'] = None
+        
+    # Update valid_min and valid_max variable attributes according to data packing for coordinate variables
+    for cc in instacDS.coords:
+        if 'valid_min' in totVariables[cc]:
+            if ('scale_factor' in dataPacking[cc]) and ('add_offset' in dataPacking[cc]):
+                instacDS[cc].attrs['valid_min'] = np.float_(((totVariables[cc]['valid_min'] - dataPacking[cc]['add_offset']) / dataPacking[cc]['scale_factor'])).astype(dataPacking[cc]['dtype'])
+            else:
+                instacDS[cc].attrs['valid_min'] = np.float_(totVariables[cc]['valid_min']).astype(dataPacking[cc]['dtype'])
+        if 'valid_max' in totVariables[cc]:             
+            if ('scale_factor' in dataPacking[cc]) and ('add_offset' in dataPacking[cc]):
+                instacDS[cc].attrs['valid_max'] = np.float_(((totVariables[cc]['valid_max'] - dataPacking[cc]['add_offset']) / dataPacking[cc]['scale_factor'])).astype(dataPacking[cc]['dtype'])
+            else:
+                instacDS[cc].attrs['valid_max'] = np.float_(totVariables[cc]['valid_max']).astype(dataPacking[cc]['dtype'])
+           
+    return instacDS
+
+def buildINSTACtotalFilename(networkID,ts,ext):
+    """
+    This function builds the filename for total files according to 
+    the structure used by Copernicus Marine Service In Situ TAC, 
+    i.e. networkID-stationID_YYYY_MM_DD.
+    
+    INPUT:
+        networkID: ID of the HFR network
+        ts: timestamp as datetime object
+        ext: file extension
+        
+    OUTPUT:
+        totFilename: filename for total file.
+    """
+    # Get the time related part of the filename
+    timeStr = ts.strftime("_%Y%m%d")
+    
+    # Build the filename
+    totFilename = 'GL_TV_HF_' + networkID + '-Total' + timeStr + ext
+    
+    return totFilename
+
+def buildINSTACtotalFolder(basePath,networkID,vers):
+    """
+    This function builds the folder structure for storing total files according to 
+    the structure used by Copernicus Marine Service In Situ TAC, 
+    i.e. networkID-stationID_YYYY_MM_DD.
+    
+    INPUT:
+        basePath: base path
+        networkID: ID of the HFR network
+        vers: version of the data model
+        
+    OUTPUT:
+        totFolder: folder path for storing total files.
+    """
+    # Strip trailing slash character
+    basePath = basePath.rstrip('/')
+    
+    # Build the folder path
+    totFolder = basePath + '/' + networkID + '/Totals/' + vers + '/' 
+    
+    return totFolder
+
+def buildEHNtotalFilename(networkID,ts,ext):
+    """
+    This function builds the filename for total files according to 
+    the structure used by the European HFR Node, i.e. networkID-Total_YYYY_MM_DD_hhmm.
+    
+    INPUT:
+        networkID: ID of the HFR network
+        ts: timestamp as datetime object
+        ext: file extension
+        
+    OUTPUT:
+        totFilename: filename for total file.
+    """
+    # Get the time related part of the filename
+    timeStr = ts.strftime("_%Y_%m_%d_%H%M")
+    
+    # Build the filename
+    totFilename = networkID + '-Total' + timeStr + ext
+    
+    return totFilename
+
+def buildEHNtotalFolder(basePath,ts,vers):
+    """
+    This function builds the folder structure for storing total files according to 
+    the structure used by the European HFR Node, i.e. YYYY/YYYY_MM/YYYY_MM_DD/.
+    
+    INPUT:
+        basePath: base path
+        ts: timestamp as datetime object
+        vers: version of the data model
+        
+    OUTPUT:
+        totFolder: folder path for storing total files.
+    """
+    # Strip trailing slash character
+    basePath = basePath.rstrip('/')
+    
+    # Get the time related part of the path
+    timeStr = ts.strftime("/%Y/%Y_%m/%Y_%m_%d/")
+    
+    # Build the folder path
+    totFolder = basePath + '/' + vers + timeStr
+    
+    return totFolder
 
 def radBinsInSearchRadius(cell,radial,sR,g):
     """
@@ -226,12 +635,22 @@ def combineRadials(rDF,gridGS,sRad,gRes,tStp,minContrSites=2):
             thisRadial['#'] = siteNum
             thisRadial['Name'] = Rindex
             if rad.is_wera:
-                thisRadial['Lon'] = dms2dd(list(map(int,rad.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-')))) 
-                if rad.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
-                    thisRadial['Lon'] = -thisRadial['Lon']
-                thisRadial['Lat'] = dms2dd(list(map(int,rad.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))            
-                if rad.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
-                    thisRadial['Lat'] = -thisRadial['Lat']
+                if 'Longitude(dd)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lon'] = float(rad.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+                    if rad.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                        thisRadial['Lon'] = -thisRadial['Lon']
+                elif 'Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lon'] = dms2dd(list(map(int,rad.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-')))) 
+                    if rad.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                        thisRadial['Lon'] = -thisRadial['Lon']
+                if 'Latitude(dd)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lat'] = float(rad.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+                    if rad.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                        thisRadial['Lat'] = -thisRadial['Lat']
+                elif 'Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lat'] = dms2dd(list(map(int,rad.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))            
+                    if rad.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                        thisRadial['Lat'] = -thisRadial['Lat']
                 thisRadial['Coverage(s)'] = float(rad.metadata['ChirpRate'].replace('S','')) * int(rad.metadata['Samples'])
                 thisRadial['RngStep(km)'] = float(rad.metadata['Range'].split()[0])
                 thisRadial['Pattern'] = 'Internal'
@@ -463,7 +882,7 @@ class Total(fileParser):
             waterIndex: list containing the indices of total vectors lying on water.
         """
         # Load the reference file (GeoPandas "naturalearth_lowres")
-        mask_dir = Path(__file__).parent.with_name(".hfradarpy")
+        mask_dir = '.hfradarpy'
         if (res == 'high'):
             maskfile = os.path.join(mask_dir, 'ne_10m_admin_0_countries.shp')
         else:
@@ -491,7 +910,7 @@ class Total(fileParser):
             return waterIndex
         
         
-    def plot(self, lon_min=None, lon_max=None, lat_min=None, lat_max=None, shade=False, show=True):
+    def plotOLD(self, lon_min=None, lon_max=None, lat_min=None, lat_max=None, shade=False, show=True):
         """
         This function plots the current total velocity field (i.e. VELU and VELV components) on a 
         Cartesian grid. The grid is defined either from the input values or from the Total object
@@ -626,6 +1045,134 @@ class Total(fileParser):
         
         # Add title
         plt.title(self.file_name + ' total velocity field', fontdict={'fontsize': 30, 'fontweight' : 'bold'})
+                
+        if show:
+            plt.show()
+        
+        return fig
+    
+    
+    def plot(self, lon_min=None, lon_max=None, lat_min=None, lat_max=None, shade=False, show=True):
+        """
+        This function plots the current total velocity field (i.e. VELU and VELV components) on a 
+        Cartesian grid. The grid is defined either from the input values or from the Total object
+        metadata. If no input is passed and no metadata related to the bounding box are present, the
+        grid is defined from data content (i.e. LOND and LATD values).
+        If 'shade' is False (default), a quiver plot with color and magnitude of the vectors proportional to
+        current velocity is produced. If 'shade' is True, a quiver plot with uniform vetor lenghts is produced,
+        superimposed to a pseudo-color map representing velocity magnitude.
+        
+        INPUT:
+            lon_min: minimum longitude value in decimal degrees (if None it is taken from Total metadata)
+            lon_max: maximum longitude value in decimal degrees (if None it is taken from Total metadata)
+            lat_min: minimum latitude value in decimal degrees (if None it is taken from Total metadata)
+            lat_max: maximum latitude value in decimal degrees (if None it is taken from Total metadata)
+            shade: boolean for enabling/disabling shade plot (default False)
+            show: boolean for enabling/disabling plot visualization (default True)
+            
+        OUTPUT:
+
+        """
+        # Get the bounding box limits
+        if not lon_min:
+            if 'BBminLongitude' in self.metadata:
+                lon_min = float(self.metadata['BBminLongitude'].split()[0])
+            else:
+                lon_min = self.data.LOND.min() - 1
+                
+        if not lon_max:
+            if 'BBmaxLongitude' in self.metadata:
+                lon_max = float(self.metadata['BBmaxLongitude'].split()[0])
+            else:
+                lon_max = self.data.LOND.max() + 1
+                
+        if not lat_min:
+            if 'BBminLatitude' in self.metadata:
+                lat_min = float(self.metadata['BBminLatitude'].split()[0])
+            else:
+                lat_min = self.data.LATD.min() - 1
+                
+        if not lat_max:
+            if 'BBmaxLatitude' in self.metadata:
+                lat_max = float(self.metadata['BBmaxLatitude'].split()[0])
+            else:
+                lat_max = self.data.LATD.max() + 1   
+                
+        # Initialize the figure     
+        cmap = 'jet'                                                                                                        # set the colorbar
+        norm = colors.Normalize(vmin=0, vmax=1)                                                                             # set colorbar limits
+        extent = [lon_min, lon_max,lat_min, lat_max]                                                                        # set the map extent
+        fig = plt.figure(num=None, figsize=(24, 24), dpi=100, facecolor='w', edgecolor='k')
+        ax = plt.axes(projection=ccrs.Mercator())                                                                           # set the map projection
+        gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--') # add grid lines
+        ax.add_feature(cfeature.LAND)                                                                                       # add land
+        ax.add_feature(cfeature.OCEAN)                                                                                      # add ocean
+        ax.add_feature(cfeature.COASTLINE)                                                                                  # add coastline
+        ax.set_extent(extent)                                                                                               # apply the map extent
+        
+        # Plot radial stations
+        for Rindex, site in self.site_source.iterrows():
+            plt.plot(site['Lon'], site['Lat'], color='r', markeredgecolor='k', marker='o', markersize=10, transform=ccrs.Geodetic())
+            ax.text(site['Lon'], site['Lat'], site['Name'], transform=ccrs.Geodetic(), fontdict={'fontsize': 22, 'fontweight' : 'bold'})
+        
+        
+        # Scale the velocity component variables
+        if self.is_wera:
+            u = self.data.VELU
+            v = self.data.VELV
+        else:
+            u = self.data.VELU / 100        # CODAR velocities are in cm/s
+            v = self.data.VELV / 100        # CODAR velocities are in cm/s
+        
+        # Plot velocity field
+        if shade:
+            self.to_xarray_multidimensional()
+            
+            # Create grid from longitude and latitude
+            [X, Y] = np.meshgrid(self.xdr['LONGITUDE'].data, self.xdr['LATITUDE'].data)
+            
+            # Create velocity variable in the shape of the grid
+            M = abs(self.xdr['VELO'][0,0,:,:].to_numpy())
+            # V = V[:-1,:-1]            
+            
+            # Make the pseudo-color plot
+            warnings.simplefilter("ignore", category=UserWarning)
+            ax.pcolormesh(X, Y, M, transform=ccrs.PlateCarree(), shading='nearest', cmap=cmap, vmin=0, vmax=1)
+            
+            # Get the longitude, latitude and velocity components
+            x,y,U,V = self.data['LOND'].values, self.data['LATD'].values, u.values, v.values
+            
+            # Evaluate the velocity magnitude
+            m = (U ** 2 + V ** 2) ** 0.5
+            
+            # Normalize velocity components
+            Un, Vn = U/m, V/m
+            
+            # Make the quiver plot
+            Q = ax.quiver(x, y, Un, Vn, transform=cartopy.crs.PlateCarree(), cmap=cmap, norm=norm, scale=20)
+            
+            warnings.simplefilter("default", category=UserWarning)
+            
+        else:
+            # Get the longitude, latitude and velocity components
+            x,y,U,V = self.data['LOND'].values, self.data['LATD'].values, u.values, v.values
+            
+            # Evaluate the velocity magnitude
+            m = (U ** 2 + V ** 2) ** 0.5
+            
+            # Make the quiver plot
+            Q = ax.quiver(x, y, U, V, m, transform=cartopy.crs.PlateCarree(), cmap=cmap, norm=norm, scale=5)
+            # Add the reference arrow
+            ax.quiverkey(Q, 0.1, 0.9, 0.5, r'$0.5 m/s$',fontproperties={'size': 12,'weight': 'bold'})
+            
+        # Add colorbar
+        sm = plt.cm.ScalarMappable(cmap=cmap,norm=norm)
+        plt.colorbar(sm,ax=ax, orientation='vertical', pad=0.1).ax.set_xlabel('velocity (m/s)', labelpad=10, )
+
+        
+        # Add title
+        plt.title(self.file_name + ' total velocity field', fontdict={'fontsize': 30, 'fontweight' : 'bold'}, pad=25)
+
                 
         if show:
             plt.show()
@@ -1160,8 +1707,6 @@ class Total(fileParser):
         # Initialize dictionary entry for QC metadta
         self.metadata['QCTest'] = {}
         
-        
-    # EUROPEAN HFR NODE (EHN) QC Tests
         
     def qc_ehn_maximum_velocity(self, totMaxSpeed=1.2):
         """

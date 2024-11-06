@@ -308,12 +308,21 @@ class fileParser(object):
         tdf.reset_index(level=None, drop=False, inplace=True)
         
         # Get the site coordinates
-        siteLon = dms2dd(list(map(int,self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
-        siteLat = dms2dd(list(map(int,self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
-        if self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
-            siteLat = -siteLat
-        if self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
-            siteLon = -siteLon
+        if 'Longitude(dd)OfTheCenterOfTheReceiveArray' in self.metadata.keys():
+            siteLon = float(self.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+            siteLat = float(self.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+            if self.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                siteLat = -siteLat
+            if self.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                siteLon = -siteLon
+        elif 'Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray' in self.metadata.keys():
+            siteLon = dms2dd(list(map(int,self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+            siteLat = dms2dd(list(map(int,self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+            if self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                siteLat = -siteLat
+            if self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                siteLon = -siteLon
+        
         
         # Use WGS84 ellipsoid
         g = Geod(ellps='WGS84')
@@ -468,6 +477,12 @@ class fileParser(object):
         header = header.replace('RA TE', 'RATE')
         wordList=re.split(r"\s+|,+|:+|=",header)
         wordList = list(filter(None, wordList))     # Remove empty elements
+        
+        # Check the header format
+        if ((header[172] == '-') and (header[175] == '-') and (header[190] == '-') and (header[194] == '-') ):
+            newFormat = False
+        elif ((header[172] == '.') and (header[190] == '.')):
+            newFormat = True                
 
         # Parse header
         if 'SAMPLES' in wordList:
@@ -496,14 +511,22 @@ class fileParser(object):
             metadataDict['NumberOfCoherentUSORTfilesSinceMeasurementStart'] = wordList[wordList.index("NRRANGES")+2].strip()
         if any("BREITE" in item for item in wordList):
             idx = wordList.index([item for item in wordList if "BREITE" in item][0])
-            metadataDict['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[idx+1].strip() + \
-                                                                                wordList[idx+2].strip() + ' ' + \
-                                                                                wordList[idx+3].strip()
-            if 'LAENGE' in wordList:  
-                if 'EBREITE' in wordList:
-                    metadataDict['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[wordList.index("LAENGE")+1].strip() + ' E'
-                elif 'WBREITE' in wordList:
-                    metadataDict['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[wordList.index("LAENGE")+1].strip() + ' W'
+            if not newFormat:                
+                metadataDict['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[idx+1].strip() + \
+                                                                                    wordList[idx+2].strip() + ' ' + \
+                                                                                    wordList[idx+3].strip()
+                if 'LAENGE' in wordList:  
+                    if 'EBREITE' in wordList:
+                        metadataDict['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[wordList.index("LAENGE")+1].strip() + ' E'
+                    elif 'WBREITE' in wordList:
+                        metadataDict['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[wordList.index("LAENGE")+1].strip() + ' W'
+            if newFormat:
+                metadataDict['Longitude(dd)OfTheCenterOfTheReceiveArray'] = wordList[idx].split('BREITE')[0]
+                if 'NTL' in wordList:
+                    idx1 = wordList.index('NTL')
+                    metadataDict['Latitude(dd)OfTheCenterOfTheReceiveArray'] = ''.join([''.join(item) for item in wordList[idx+1:idx1]])
+                else:
+                    metadataDict['Latitude(dd)OfTheCenterOfTheReceiveArray'] = wordList[idx+1].strip() + wordList[idx+2].strip()
         if 'NTL' in wordList:
             metadataDict['NTL'] = wordList[wordList.index("NTL")+1].strip()
         if 'NFTL' in wordList:
