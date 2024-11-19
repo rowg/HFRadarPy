@@ -97,10 +97,11 @@ def timestamp_from_lluv_filename(filename):
     timestamp = dt.datetime.strptime(mat_time, "%Y_%m_%d_%H%M")
     return timestamp
 
-def addBoundingBoxMetadata(obj,lon_min,lon_max,lat_min,lat_max,grid_res=None):
+
+def addBoundingBoxMetadata(obj, lon_min, lon_max, lat_min, lat_max, grid_res=None):
     """
     This function adds metadata related to the bounding box to the input Radial or Total object.
-    
+
     INPUTS:
         obj: Radial or Total object
         lon_min: minimum longitude of the bounding box
@@ -109,10 +110,10 @@ def addBoundingBoxMetadata(obj,lon_min,lon_max,lat_min,lat_max,grid_res=None):
         lat_max: maximum latitude of the bounding box
         grid_res: grid resolution in km
 
-        
+
     OUTPUTS:
         obj = Radial or Total object with metadata related to the bounding box
-        
+
     """
     obj.metadata['BBminLongitude'] = str(lon_min) + ' deg'
     obj.metadata['BBmaxLongitude'] = str(lon_max) + ' deg'
@@ -120,9 +121,10 @@ def addBoundingBoxMetadata(obj,lon_min,lon_max,lat_min,lat_max,grid_res=None):
     obj.metadata['BBmaxLatitude'] = str(lat_max) + ' deg'
     if grid_res:
         obj.metadata['GridSpacing'] = str(grid_res) + ' km'
-    
+
     return obj
-    
+
+
 class fileParser(object):
     """
     A generic parser for the CODAR CTF, WERA CRAD and CUR file formats.
@@ -142,14 +144,14 @@ class fileParser(object):
             self.file_name = split_path[1]
             self.full_file = os.path.realpath(fname)
             extension = os.path.splitext(fname)[1]
-            
+
             if (extension == '.ruv') or (extension == '.tuv'):
                 self.CTFparser()
             elif extension == '.crad_ascii':
                 self.CRADparser()
             elif extension == '.cur_asc':
-                self.CURparser()  
-    
+                self.CURparser()
+
     def CTFparser(self):
         """
         Return an fileParser object obtained by parsing CTF-LLUV files
@@ -265,7 +267,7 @@ class fileParser(object):
             self.time = dt.datetime(*[int(s) for s in self.metadata["TimeStamp"].split()])
         except KeyError:
             pass
-        
+
     def CRADparser(self):
         """
         Return an fileParser object obtained by parsing WERA CRAD radial files
@@ -281,7 +283,7 @@ class fileParser(object):
             open_crad = open_file.readlines()
             open_crad = [i.lstrip() for i in open_crad]
             # Parse header
-            header= str(''.join(open_crad[0 : 9])).replace("\n", " ").strip()
+            header = str(''.join(open_crad[0: 9])).replace("\n", " ").strip()
             self.metadata = self._parse_crad_header(header)
             # Read data content
             table = True  # we found a table
@@ -289,7 +291,12 @@ class fileParser(object):
             table_data = u''
             self._tables[str(table_count)] = OrderedDict()
             self._tables[str(table_count)]['TableType'] = 'CRAD'
-            self._tables[str(table_count)]['_TableHeader'] = ['Top-Left gridpoint Latitude','Top-Left gridpoint Longitude','Number of measurements','Average (SignalToNoise * RadialVelocity)','Average (SignalToNoise * SquaredRadialVelocity)','Sum over all Signal-to-Nois-Ratio','Overall Power of the gridcell']
+            self._tables[str(table_count)]['_TableHeader'] = ['Top-Left gridpoint Latitude',
+                                                              'Top-Left gridpoint Longitude', 'Number of measurements',
+                                                              'Average (SignalToNoise * RadialVelocity)',
+                                                              'Average (SignalToNoise * SquaredRadialVelocity)',
+                                                              'Sum over all Signal-to-Nois-Ratio',
+                                                              'Overall Power of the gridcell']
             self._tables[str(table_count)]['TableColumnTypes'] = 'LatC LonC KUR SNV SNS SNR PWR'
             table_data = ''.join(open_crad[9:])
             tdf = pd.read_csv(
@@ -300,13 +307,13 @@ class fileParser(object):
                 skipinitialspace=True
             )
             self._tables[str(table_count)]['data'] = tdf
-            
+
         # Get the indexes of rows for which Kur is 0 (i.e. no measurements)
-        indexNames = tdf[ tdf['KUR'] == 0 ].index
+        indexNames = tdf[tdf['KUR'] == 0].index
         # Delete these row indexes from DataFrame
-        tdf.drop(indexNames , inplace=True)
+        tdf.drop(indexNames, inplace=True)
         tdf.reset_index(level=None, drop=False, inplace=True)
-        
+
         # Get the site coordinates
         if 'Longitude(dd)OfTheCenterOfTheReceiveArray' in self.metadata.keys():
             siteLon = float(self.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
@@ -316,38 +323,41 @@ class fileParser(object):
             if self.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'W':
                 siteLon = -siteLon
         elif 'Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray' in self.metadata.keys():
-            siteLon = dms2dd(list(map(int,self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
-            siteLat = dms2dd(list(map(int,self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+            siteLon = dms2dd(
+                list(map(int, self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+            siteLat = dms2dd(
+                list(map(int, self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
             if self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
                 siteLat = -siteLat
             if self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
                 siteLon = -siteLon
-        
-        
+
         # Use WGS84 ellipsoid
         g = Geod(ellps='WGS84')
-        self.metadata['GreatCircle'] = '"WGS84"' + ' ' + str(g.a) + '  ' + str(1/g.f)
-        
+        self.metadata['GreatCircle'] = '"WGS84"' + ' ' + str(g.a) + '  ' + str(1 / g.f)
+
         # Parse data content
-        radialData = tdf.apply(lambda x: self._parse_crad_data(x,siteLon,siteLat,g), axis=1)
+        radialData = tdf.apply(lambda x: self._parse_crad_data(x, siteLon, siteLat, g), axis=1)
         # Assign column names to the combination DataFrame
-        radialData.columns = ['LOND','LATD','VELU','VELV','VELO','HEAD','HCSS','EACC']   
+        radialData.columns = ['LOND', 'LATD', 'VELU', 'VELV', 'VELO', 'HEAD', 'HCSS', 'EACC']
         table = True  # we found a table
         table_count = table_count + 1  # this is the nth table
         table_data = u''
         self._tables[str(table_count)] = OrderedDict()
         self._tables[str(table_count)]['TableType'] = 'LLUV'
-        self._tables[str(table_count)]['_TableHeader'] = ['Longitude', 'Latitude', 'U comp', 'V comp', 'Velocity', 'Direction', 'Variance', 'Accuracy']
-        self._tables[str(table_count)]['TableColumnTypes'] = 'LOND','LATD','VELU','VELV','VELO','HEAD','HCSS','EACC'
+        self._tables[str(table_count)]['_TableHeader'] = ['Longitude', 'Latitude', 'U comp', 'V comp', 'Velocity',
+                                                          'Direction', 'Variance', 'Accuracy']
+        self._tables[str(table_count)][
+            'TableColumnTypes'] = 'LOND', 'LATD', 'VELU', 'VELV', 'VELO', 'HEAD', 'HCSS', 'EACC'
         self._tables[str(table_count)]['data'] = radialData
-        
+
         self._iscorrupt = False
-    
+
         try:
             self.time = dt.datetime.strptime(self.metadata['DateOfMeasurement'], '%d-%b-%y %H:%M %Z')
         except KeyError:
             pass
-        
+
     def CURparser(self):
         """
         Return an fileParser object obtained by parsing WERA CUR total files
@@ -364,18 +374,22 @@ class fileParser(object):
             open_crad = [i.lstrip() for i in open_crad]
             # Parse header
             numStation = int(open_crad[0])
-            header= open_crad[0 : numStation+7]
+            header = open_crad[0: numStation + 7]
             header = [elem for elem in header if elem.strip()]
-            self.metadata,self.site_source = self._parse_cur_header(header)
+            self.metadata, self.site_source = self._parse_cur_header(header)
             # Read data content
             table = True  # we found a table
             table_count = table_count + 1  # this is the nth table
             table_data = u''
             self._tables[str(table_count)] = OrderedDict()
             self._tables[str(table_count)]['TableType'] = 'CUR'
-            self._tables[str(table_count)]['_TableHeader'] = ['X-direction Index','Y-direction Index','Velocity U component [m/s]','Velocity V component [m/s]','Klass','Accuracy of U component [m/s]','Accuracy of V component [m/s]']
+            self._tables[str(table_count)]['_TableHeader'] = ['X-direction Index', 'Y-direction Index',
+                                                              'Velocity U component [m/s]',
+                                                              'Velocity V component [m/s]', 'Klass',
+                                                              'Accuracy of U component [m/s]',
+                                                              'Accuracy of V component [m/s]']
             self._tables[str(table_count)]['TableColumnTypes'] = 'IX IY U V KL Acc_U Acc_V'
-            table_data = ''.join(open_crad[numStation+9:])
+            table_data = ''.join(open_crad[numStation + 9:])
             tdf = pd.read_csv(
                 io.StringIO(table_data),
                 sep=' ',
@@ -384,41 +398,43 @@ class fileParser(object):
                 skipinitialspace=True
             )
             self._tables[str(table_count)]['data'] = tdf
-            
+
         # Get grid information
         cellSize = float(self.metadata['DGT'].split()[0])
         topLeftLon = float(self.metadata['TopLeftLongitude'])
         topLeftLat = float(self.metadata['TopLeftLatitude'])
         nx = int(self.metadata['NX'])
         ny = int(self.metadata['NY'])
-        
+
         # Generate grid coordinates
         gridGS = createLonLatGridFromTopLeftPointWera(topLeftLon, topLeftLat, cellSize, nx, ny)
         # extract longitudes and latitude from grid GeoSeries and insert them into numpy arrays
         lonVec = np.unique(gridGS.x.to_numpy())
         latVec = np.flipud(np.unique(gridGS.y.to_numpy()))
         # manage antimeridian crossing
-        lonVec = np.concatenate((lonVec[lonVec>=0],lonVec[lonVec<0]))
-                
+        lonVec = np.concatenate((lonVec[lonVec >= 0], lonVec[lonVec < 0]))
+
         # Use WGS84 ellipsoid
         g = Geod(ellps='WGS84')
-        self.metadata['GreatCircle'] = '"WGS84"' + ' ' + str(g.a) + '  ' + str(1/g.f)
-            
+        self.metadata['GreatCircle'] = '"WGS84"' + ' ' + str(g.a) + '  ' + str(1 / g.f)
+
         # Parse data content
-        totalData = tdf.apply(lambda x: self._parse_cur_data(x,lonVec,latVec), axis=1)
+        totalData = tdf.apply(lambda x: self._parse_cur_data(x, lonVec, latVec), axis=1)
         # Assign column names to the combination DataFrame
-        totalData.columns = ['LOND','LATD','VELU','VELV','VELO','HEAD','UACC','VACC']   
+        totalData.columns = ['LOND', 'LATD', 'VELU', 'VELV', 'VELO', 'HEAD', 'UACC', 'VACC']
         table = True  # we found a table
         table_count = table_count + 1  # this is the nth table
         table_data = u''
         self._tables[str(table_count)] = OrderedDict()
         self._tables[str(table_count)]['TableType'] = 'LLUV'
-        self._tables[str(table_count)]['_TableHeader'] = ['Longitude', 'Latitude', 'U comp', 'V comp', 'Velocity', 'Heading', 'U accuracy', 'V accuracy']
-        self._tables[str(table_count)]['TableColumnTypes'] = 'LOND','LATD','VELU','VELV','VELO','HEAD','UACC','VACC'
+        self._tables[str(table_count)]['_TableHeader'] = ['Longitude', 'Latitude', 'U comp', 'V comp', 'Velocity',
+                                                          'Heading', 'U accuracy', 'V accuracy']
+        self._tables[str(table_count)][
+            'TableColumnTypes'] = 'LOND', 'LATD', 'VELU', 'VELV', 'VELO', 'HEAD', 'UACC', 'VACC'
         self._tables[str(table_count)]['data'] = totalData
-        
+
         self._iscorrupt = False
-    
+
         try:
             self.time = dt.datetime.strptime(self.site_source['DateOfMeasurement'][0], '%d-%b-%Y %H:%M %Z')
         except KeyError:
@@ -457,173 +473,178 @@ class fileParser(object):
         key = line_split[0]  # save key variable
         value = line_split[1].strip()  # save value variable and strip whitespace from value
         return key, value
-    
+
     @staticmethod
     def _parse_crad_header(header):
         """
         Parse CRAD header into key, value pairs and assigns them to the metadata field
-        
+
         INPUT:
             header: string containing the crad header
-        
+
         OUTPUT:
             metadataDict: dictionary containing the key, value pairs from the header
         """
 
         # create output Dictionary
-        metadataDict =  OrderedDict()
-        
+        metadataDict = OrderedDict()
+
         # Split header into word list (blank space, comma, column and equal as separators)
         header = header.replace('RA TE', 'RATE')
-        wordList=re.split(r"\s+|,+|:+|=",header)
-        wordList = list(filter(None, wordList))     # Remove empty elements
-        
+        wordList = re.split(r"\s+|,+|:+|=", header)
+        wordList = list(filter(None, wordList))  # Remove empty elements
+
         # Check the header format
-        if ((header[172] == '-') and (header[175] == '-') and (header[190] == '-') and (header[194] == '-') ):
+        if ((header[172] == '-') and (header[175] == '-') and (header[190] == '-') and (header[194] == '-')):
             newFormat = False
         elif ((header[172] == '.') and (header[190] == '.')):
-            newFormat = True                
+            newFormat = True
 
-        # Parse header
+            # Parse header
         if 'SAMPLES' in wordList:
-            metadataDict['Samples'] = wordList[wordList.index("SAMPLES")-1].strip()
-            metadataDict['DateOfMeasurement'] = wordList[wordList.index("SAMPLES")+1].strip() + ' ' + \
-                                                wordList[wordList.index("SAMPLES")+2].strip() + ':' + \
-                                                wordList[wordList.index("SAMPLES")+3].strip() + ' ' + \
-                                                wordList[wordList.index("SAMPLES")+4].strip()
+            metadataDict['Samples'] = wordList[wordList.index("SAMPLES") - 1].strip()
+            metadataDict['DateOfMeasurement'] = wordList[wordList.index("SAMPLES") + 1].strip() + ' ' + \
+                                                wordList[wordList.index("SAMPLES") + 2].strip() + ':' + \
+                                                wordList[wordList.index("SAMPLES") + 3].strip() + ' ' + \
+                                                wordList[wordList.index("SAMPLES") + 4].strip()
             metadataDict['TimeZone'] = metadataDict['DateOfMeasurement'].split()[2]
-            metadataDict['StationName'] = wordList[wordList.index("SAMPLES")+5].strip()
+            metadataDict['StationName'] = wordList[wordList.index("SAMPLES") + 5].strip()
         if 'FREQUENZ' in wordList:
-            metadataDict['FileType'] = wordList[wordList.index("FREQUENZ")-1].strip()
-            metadataDict['CenterFrequency'] = wordList[wordList.index("FREQUENZ")+1].strip()
+            metadataDict['FileType'] = wordList[wordList.index("FREQUENZ") - 1].strip()
+            metadataDict['CenterFrequency'] = wordList[wordList.index("FREQUENZ") + 1].strip()
         if 'YEAR' in wordList:
-            metadataDict['Year'] = wordList[wordList.index("YEAR")+1].strip()
+            metadataDict['Year'] = wordList[wordList.index("YEAR") + 1].strip()
         if 'RANGE' in wordList:
-            metadataDict['Range'] = wordList[wordList.index("RANGE")+1].strip() + ' ' + \
-                                    wordList[wordList.index("RANGE")+2].strip()
+            metadataDict['Range'] = wordList[wordList.index("RANGE") + 1].strip() + ' ' + \
+                                    wordList[wordList.index("RANGE") + 2].strip()
         if 'TRUENORTH' in wordList:
-            metadataDict['TrueNorth'] = wordList[wordList.index("TRUENORTH")+1].strip() + ' ' + \
-                                        wordList[wordList.index("TRUENORTH")+2].strip()
+            metadataDict['TrueNorth'] = wordList[wordList.index("TRUENORTH") + 1].strip() + ' ' + \
+                                        wordList[wordList.index("TRUENORTH") + 2].strip()
         if 'RATE' in wordList:
-            metadataDict['ChirpRate'] = wordList[wordList.index("RATE")+1].strip()
+            metadataDict['ChirpRate'] = wordList[wordList.index("RATE") + 1].strip()
         if 'NRRANGES' in wordList:
-            metadataDict['NumberOfRangeCells'] = wordList[wordList.index("NRRANGES")+1].strip()
-            metadataDict['NumberOfCoherentUSORTfilesSinceMeasurementStart'] = wordList[wordList.index("NRRANGES")+2].strip()
+            metadataDict['NumberOfRangeCells'] = wordList[wordList.index("NRRANGES") + 1].strip()
+            metadataDict['NumberOfCoherentUSORTfilesSinceMeasurementStart'] = wordList[
+                wordList.index("NRRANGES") + 2].strip()
         if any("BREITE" in item for item in wordList):
             idx = wordList.index([item for item in wordList if "BREITE" in item][0])
-            if not newFormat:                
-                metadataDict['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[idx+1].strip() + \
-                                                                                    wordList[idx+2].strip() + ' ' + \
-                                                                                    wordList[idx+3].strip()
-                if 'LAENGE' in wordList:  
+            if not newFormat:
+                metadataDict['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[idx + 1].strip() + \
+                                                                                    wordList[idx + 2].strip() + ' ' + \
+                                                                                    wordList[idx + 3].strip()
+                if 'LAENGE' in wordList:
                     if 'EBREITE' in wordList:
-                        metadataDict['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[wordList.index("LAENGE")+1].strip() + ' E'
+                        metadataDict['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[wordList.index(
+                            "LAENGE") + 1].strip() + ' E'
                     elif 'WBREITE' in wordList:
-                        metadataDict['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[wordList.index("LAENGE")+1].strip() + ' W'
+                        metadataDict['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'] = wordList[wordList.index(
+                            "LAENGE") + 1].strip() + ' W'
             if newFormat:
                 metadataDict['Longitude(dd)OfTheCenterOfTheReceiveArray'] = wordList[idx].split('BREITE')[0]
                 if 'NTL' in wordList:
                     idx1 = wordList.index('NTL')
-                    metadataDict['Latitude(dd)OfTheCenterOfTheReceiveArray'] = ''.join([''.join(item) for item in wordList[idx+1:idx1]])
+                    metadataDict['Latitude(dd)OfTheCenterOfTheReceiveArray'] = ''.join(
+                        [''.join(item) for item in wordList[idx + 1:idx1]])
                 else:
-                    metadataDict['Latitude(dd)OfTheCenterOfTheReceiveArray'] = wordList[idx+1].strip() + wordList[idx+2].strip()
+                    metadataDict['Latitude(dd)OfTheCenterOfTheReceiveArray'] = wordList[idx + 1].strip() + wordList[
+                        idx + 2].strip()
         if 'NTL' in wordList:
-            metadataDict['NTL'] = wordList[wordList.index("NTL")+1].strip()
+            metadataDict['NTL'] = wordList[wordList.index("NTL") + 1].strip()
         if 'NFTL' in wordList:
-            metadataDict['NFTL'] = wordList[wordList.index("NFTL")+1].strip()
+            metadataDict['NFTL'] = wordList[wordList.index("NFTL") + 1].strip()
         if 'nx' in wordList:
-            metadataDict['nx'] = wordList[wordList.index("nx")+1].strip()
+            metadataDict['nx'] = wordList[wordList.index("nx") + 1].strip()
         if 'ny' in wordList:
-            metadataDict['ny'] = wordList[wordList.index("ny")+1].strip()
+            metadataDict['ny'] = wordList[wordList.index("ny") + 1].strip()
         if 'OFFSET' in wordList:
-            metadataDict['Offset'] = wordList[wordList.index("OFFSET")+1].replace('RXOFFSET','')
+            metadataDict['Offset'] = wordList[wordList.index("OFFSET") + 1].replace('RXOFFSET', '')
         if any("RXOFFSET" in item for item in wordList):
             idx = wordList.index([item for item in wordList if "RXOFFSET" in item][0])
-            metadataDict['RXOffset'] = wordList[idx+1].replace('SS','')
+            metadataDict['RXOffset'] = wordList[idx + 1].replace('SS', '')
         if any("SS" in item for item in wordList):
             idx = wordList.index([item for item in wordList if "SS" in item][0])
-            metadataDict['SS'] = wordList[idx+1].strip()
+            metadataDict['SS'] = wordList[idx + 1].strip()
         if 'HD' in wordList:
-            idx1 = wordList.index("HD")+1
+            idx1 = wordList.index("HD") + 1
             if 'RFI2N' in wordList:
                 idx2 = wordList.index("RFI2N")
             elif 'NCOV' in wordList:
                 idx2 = wordList.index("NCOV")
             metadataDict['HD'] = ''
-            for idx in range(idx1,idx2):
+            for idx in range(idx1, idx2):
                 metadataDict['HD'] = metadataDict['HD'] + wordList[idx] + ' '
             metadataDict['HD'].strip()
         if 'RFI2N' in wordList:
-            metadataDict['RFI2N'] = wordList[wordList.index("RFI2N")+1].strip()
+            metadataDict['RFI2N'] = wordList[wordList.index("RFI2N") + 1].strip()
         if 'NCOV' in wordList:
-            metadataDict['NCOV'] = wordList[wordList.index("NCOV")+1].strip()
+            metadataDict['NCOV'] = wordList[wordList.index("NCOV") + 1].strip()
         if 'LAT' in wordList:
-            metadataDict['TopLeftLatitude'] = wordList[wordList.index("LAT")+1].strip()
+            metadataDict['TopLeftLatitude'] = wordList[wordList.index("LAT") + 1].strip()
         if 'LON' in wordList:
-            metadataDict['TopLeftLongitude'] = wordList[wordList.index("LON")+1].strip()
+            metadataDict['TopLeftLongitude'] = wordList[wordList.index("LON") + 1].strip()
         if 'DGT' in wordList:
-            metadataDict['DGT'] = wordList[wordList.index("DGT")+1].strip()
+            metadataDict['DGT'] = wordList[wordList.index("DGT") + 1].strip()
         metadataDict['NumberOfSeries'] = wordList[-6]
-        metadataDict['NumberOfAntennas'] = wordList[-5].replace('-','')
-        metadataDict['CartesianRadials'] = wordList[-4].replace('-','')      
-        
+        metadataDict['NumberOfAntennas'] = wordList[-5].replace('-', '')
+        metadataDict['CartesianRadials'] = wordList[-4].replace('-', '')
+
         return metadataDict
-    
+
     @staticmethod
-    def _parse_crad_data(cellData,siteLon,siteLat,g):
+    def _parse_crad_data(cellData, siteLon, siteLat, g):
         """
         Parse crad data content into Radial parameters (i.e. CTF-like)
-        
+
         INPUT:
             cellData: aeries containing the cell data
             siteLon: longitude of the radar site
             siteLat: latitude of the radar site
             g: Geod object with CRS
-            
+
         OUTPUT:
             radialData: Series containing the Radial parameters (i.e. CTF-like)
         """
 
         # create output Series
-        radialData = pd.Series(np.nan,index=range(8))
-        
+        radialData = pd.Series(np.nan, index=range(8))
+
         # Parse data
         radialData.loc[0] = np.rad2deg(cellData['LonC'])
         radialData.loc[1] = np.rad2deg(cellData['LatC'])
         radialData.loc[4] = cellData['SNV'] / cellData['SNR']
-        radialData.loc[5],az21,dist = g.inv(siteLon,siteLat,radialData.loc[0],radialData.loc[1])
-        if radialData.loc[5] <0:
-            radialData.loc[5] += 360    # keep angles clockwise from true North
+        radialData.loc[5], az21, dist = g.inv(siteLon, siteLat, radialData.loc[0], radialData.loc[1])
+        if radialData.loc[5] < 0:
+            radialData.loc[5] += 360  # keep angles clockwise from true North
         radialData.loc[2] = radialData.loc[4] * math.sin(math.radians(radialData.loc[5]))
         radialData.loc[3] = radialData.loc[4] * math.cos(math.radians(radialData.loc[5]))
         radialData.loc[6] = cellData['SNS'] / cellData['SNR']
-        radialData.loc[7] = radialData.loc[6] / math.sqrt(cellData['KUR'])              
-        
+        radialData.loc[7] = radialData.loc[6] / math.sqrt(cellData['KUR'])
+
         return radialData
-    
+
     @staticmethod
     def _parse_cur_header(header):
         """
         Parse CUR header into key, value pairs and assigns them to the metadata field
-        
+
         INPUT:
             header: list containing the cur header
-        
+
         OUTPUT:
             metadataDict: dictionary containing the key, value pairs from the header
             site_source: DataFrame containing the site source information
         """
 
         # create output Dictionary
-        metadataDict =  OrderedDict()
+        metadataDict = OrderedDict()
 
         # Parse first part of the header (contributing radial sites)
         metadataDict['NumberOfContributingRadials'] = header[0]
         lineNumber = int(metadataDict['NumberOfContributingRadials'])
         metadataDict['SiteSource'] = ['DateOfMeasurement Name Lat Lon Coverage(s)']
         for i in range(lineNumber):
-            metadataDict['SiteSource'].append(header[i+1])
-        
+            metadataDict['SiteSource'].append(header[i + 1])
+
         # Parse second part of the header (regular structure)
         lineNumber += 3
         line = header[lineNumber].strip()
@@ -634,18 +655,20 @@ class fileParser(object):
         metadataDict['NX'] = elements[3]
         metadataDict['NY'] = elements[4]
         lineNumber += 1
-        metadataDict['NumberOfEntries'] = header[lineNumber]   
-        
+        metadataDict['NumberOfEntries'] = header[lineNumber]
+
         # create output DataFrame
-        site_source = pd.DataFrame(np.nan,index=range(len(metadataDict['SiteSource'])-1),columns=['#', 'Name', 'Lat', 'Lon', 'Coverage(s)', 'DateOfMeasurement', 'RngStep(km)', 'Pattern', 'AntBearing(NCW)'])
-        
+        site_source = pd.DataFrame(np.nan, index=range(len(metadataDict['SiteSource']) - 1),
+                                   columns=['#', 'Name', 'Lat', 'Lon', 'Coverage(s)', 'DateOfMeasurement',
+                                            'RngStep(km)', 'Pattern', 'AntBearing(NCW)'])
+
         # Parse site source information
         dateOfMeasurement = []
         name = []
         siteLat = []
         siteLon = []
         coverage = []
-        
+
         for ss in metadataDict['SiteSource']:
             if not 'DateOfMeasurement' in ss:
                 dateOfMeasurement.append(ss.split()[0] + ' ' + ss.split()[1] + ' ' + ss.split()[2])
@@ -659,43 +682,43 @@ class fileParser(object):
                 elif ss.split()[7] == 'West':
                     siteLon.append(-float(ss.split()[6]))
                 coverage.append(ss.split()[10])
-                
-        site_source['#'] = np.arange(len(site_source.index))+1
+
+        site_source['#'] = np.arange(len(site_source.index)) + 1
         site_source['Name'] = name
         site_source['Lat'] = siteLat
         site_source['Lon'] = siteLon
         site_source['Coverage(s)'] = coverage
         site_source['DateOfMeasurement'] = dateOfMeasurement
-        
+
         return metadataDict, site_source
-    
+
     @staticmethod
-    def _parse_cur_data(cellData,lonVec,latVec):
+    def _parse_cur_data(cellData, lonVec, latVec):
         """
         Parse cur data content into Total parameters (i.e. CTF-like)
-        
+
         INPUT:
             cellData: Series containing the cell data
             lonVec: array containing the longitudes of the geographical grid
             latVec: array containing the latitudes of the geographical grid
-            
+
         OUTPUT:
             totalData: Series containing the Total parameters (i.e. CTF-like)
         """
 
         # create output Series
-        totalData = pd.Series(np.nan,index=range(7))
-        
+        totalData = pd.Series(np.nan, index=range(7))
+
         # Parse data
-        totalData.loc[0] = lonVec[int(cellData['IX']-1)]
-        totalData.loc[1] = latVec[int(cellData['IY']-1)]
+        totalData.loc[0] = lonVec[int(cellData['IX'] - 1)]
+        totalData.loc[1] = latVec[int(cellData['IY'] - 1)]
         totalData.loc[2] = cellData['U']
         totalData.loc[3] = cellData['V']
-        totalData.loc[4] = np.sqrt(cellData['U']**2 + cellData['V']**2)
-        totalData.loc[5] = (360 + np.arctan2(cellData['U'],cellData['V']) *180 / np.pi) % 360
+        totalData.loc[4] = np.sqrt(cellData['U'] ** 2 + cellData['V'] ** 2)
+        totalData.loc[5] = (360 + np.arctan2(cellData['U'], cellData['V']) * 180 / np.pi) % 360
         totalData.loc[6] = cellData['Acc_U']
         totalData.loc[7] = cellData['Acc_V']
-        
+
         return totalData
 
     @abstractmethod
