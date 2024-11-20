@@ -592,6 +592,156 @@ class Radial(fileParser):
             plt.show()
 
         return fig
+    
+    def plot(self, lon_min=None, lon_max=None, lat_min=None, lat_max=None, shade=False, show=True):
+        """
+        This function plots the current radial velocity field (i.e. VELU and VELV components) on a 
+        Cartesian grid. The grid is defined either from the input values or from the Radial object
+        metadata. If no input is passed and no metadata related to the bounding box are present, the
+        grid is defined from data content (i.e. LOND and LATD values).
+        If 'shade' is False (default), a quiver plot with color and magnitude of the vectors proportional to
+        current velocity is produced. If 'shade' is True, a quiver plot with uniform vetor lenghts is produced,
+        superimposed to a pseudo-color map representing velocity magnitude.
+        
+        INPUT:
+            lon_min: minimum longitude value in decimal degrees (if None it is taken from Total metadata)
+            lon_max: maximum longitude value in decimal degrees (if None it is taken from Total metadata)
+            lat_min: minimum latitude value in decimal degrees (if None it is taken from Total metadata)
+            lat_max: maximum latitude value in decimal degrees (if None it is taken from Total metadata)
+            shade: boolean for enabling/disabling shade plot (default False)
+            show: boolean for enabling/disabling plot visualization (default True)
+            
+        OUTPUT:
+
+        """
+        # Get the bounding box limits
+        if not lon_min:
+            if 'BBminLongitude' in self.metadata:
+                lon_min = float(self.metadata['BBminLongitude'].split()[0])
+            else:
+                lon_min = self.data.LOND.min() - 1
+                
+        if not lon_max:
+            if 'BBmaxLongitude' in self.metadata:
+                lon_max = float(self.metadata['BBmaxLongitude'].split()[0])
+            else:
+                lon_max = self.data.LOND.max() + 1
+                
+        if not lat_min:
+            if 'BBminLatitude' in self.metadata:
+                lat_min = float(self.metadata['BBminLatitude'].split()[0])
+            else:
+                lat_min = self.data.LATD.min() - 1
+                
+        if not lat_max:
+            if 'BBmaxLatitude' in self.metadata:
+                lat_max = float(self.metadata['BBmaxLatitude'].split()[0])
+            else:
+                lat_max = self.data.LATD.max() + 1   
+                
+        # Get station coordinates and codes
+        if not self.is_wera:
+            siteLon = float(self.metadata['Origin'].split()[1])
+            siteLat = float(self.metadata['Origin'].split()[0])
+            siteCode = self.metadata['Site']
+        else:
+            if 'Longitude(dd)OfTheCenterOfTheReceiveArray' in self.metadata.keys():
+                siteLon = float(self.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+                siteLat = float(self.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+                if self.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                    siteLat = -siteLat
+                if self.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                    siteLon = -siteLon
+            elif 'Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray' in self.metadata.keys():
+                siteLon = dms2dd(list(map(int,self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+                siteLat = dms2dd(list(map(int,self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+                if self.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                    siteLat = -siteLat
+                if self.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                    siteLon = -siteLon
+            siteCode = self.metadata['StationName']
+                
+        # Initialize the figure     
+        cmap = 'jet'                                                                                                        # set the colorbar
+        norm = colors.Normalize(vmin=0, vmax=1)                                                                             # set colorbar limits
+        extent = [lon_min, lon_max,lat_min, lat_max]                                                                        # set the map extent
+        fig = plt.figure(num=None, figsize=(24, 24), dpi=100, facecolor='w', edgecolor='k')
+        ax = plt.axes(projection=ccrs.Mercator())                                                                           # set the map projection
+        gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--') # add grid lines
+        ax.add_feature(cfeature.LAND)                                                                                       # add land
+        ax.add_feature(cfeature.OCEAN)                                                                                      # add ocean
+        ax.add_feature(cfeature.COASTLINE)                                                                                  # add coastline
+        ax.set_extent(extent)                                                                                               # apply the map extent
+        
+        # Plot radial stations
+        plt.plot(siteLon, siteLat, color='r', markeredgecolor='k', marker='o', markersize=10, transform=ccrs.Geodetic())
+        ax.text(siteLon, siteLat, siteCode, transform=ccrs.Geodetic(), fontdict={'fontsize': 22, 'fontweight' : 'bold'})        
+        
+        # Scale the velocity component variables
+        if self.is_wera:
+            u = self.data.VELU
+            v = self.data.VELV
+            vel = abs(self.data.VELO)
+        else:
+            u = self.data.VELU / 100                # CODAR velocities are in cm/s
+            v = self.data.VELV / 100                # CODAR velocities are in cm/s
+            vel = abs(self.data.VELO) / 100         # CODAR velocities are in cm/s     
+        
+        # Plot velocity field
+        if shade:
+            self.to_xarray_multidimensional()
+            
+            # Create grid from longitude and latitude
+            if self.is_wera:
+                # Create grid from longitude and latitude
+                [X, Y] = np.meshgrid(self.xdr['LONGITUDE'].data, self.xdr['LATITUDE'].data)
+            else:
+                X, Y = self.xdr['LONGITUDE'].data, self.xdr['LATITUDE'].data
+            
+            # Create velocity variable in the shape of the grid
+            M = abs(self.xdr['VELO'][0,0,:,:].to_numpy())
+            # V = V[:-1,:-1]            
+            
+            # Make the pseudo-color plot
+            warnings.simplefilter("ignore", category=UserWarning)
+            ax.pcolormesh(X, Y, M, transform=ccrs.PlateCarree(), shading='nearest', cmap=cmap, vmin=0, vmax=1)
+            
+            # Get the longitude, latitude and velocity components
+            x,y,U,V = self.data['LOND'].values, self.data['LATD'].values, u.values, v.values
+            
+            # Evaluate the velocity magnitude
+            m = (U ** 2 + V ** 2) ** 0.5
+            
+            # Normalize velocity components
+            Un, Vn = U/m, V/m
+            
+            # Make the quiver plot
+            Q = ax.quiver(x, y, Un, Vn, transform=cartopy.crs.PlateCarree(), width=0.001, headwidth=4, headlength=4, headaxislength=4, cmap=cmap, norm=norm, scale=20)
+            
+            warnings.simplefilter("default", category=UserWarning)
+            
+        else:
+            # Get the longitude, latitude and velocity components
+            x,y,U,V = self.data['LOND'].values, self.data['LATD'].values, u.values, v.values
+            
+            # Make the quiver plot
+            Q = ax.quiver(x, y, U, V, vel, transform=cartopy.crs.PlateCarree(), cmap=cmap, norm=norm, scale=5)
+            # Add the reference arrow
+            ax.quiverkey(Q, 0.1, 0.9, 0.5, r'$0.5 m/s$',fontproperties={'size': 12,'weight': 'bold'})
+            
+        # Add colorbar
+        sm = plt.cm.ScalarMappable(cmap=cmap,norm=norm)
+        plt.colorbar(sm,ax=ax, orientation='vertical', pad=0.1).ax.set_xlabel('velocity (m/s)', labelpad=10, )
+
+        
+        # Add title
+        plt.title(self.file_name + ' total velocity field', fontdict={'fontsize': 30, 'fontweight' : 'bold'}, pad=25)
+
+                
+        if show:
+            plt.show()
+        
+        return fig
 
     def to_xarray(self, model="tabular", enhance=False, range_minmax=None, bearing=None):
         """
@@ -2103,6 +2253,10 @@ class Radial(fileParser):
                 f.write("%ProcessingTool: {}\n".format(tool))
                 # f.write('%{}: {}\n'.format(footer_key, footer_value))
             f.write("%End:")
+            
+    def file_type(self):
+        """Return a string representing the type of file this is."""
+        return 'radial'
 
     def initialize_qc(self):
         """
