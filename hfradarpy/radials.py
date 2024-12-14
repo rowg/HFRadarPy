@@ -735,7 +735,7 @@ class Radial(fileParser):
 
         
         # Add title
-        plt.title(self.file_name + ' total velocity field', fontdict={'fontsize': 30, 'fontweight' : 'bold'}, pad=25)
+        plt.title(self.file_name + ' radial velocity field', fontdict={'fontsize': 30, 'fontweight' : 'bold'}, pad=25)
 
                 
         if show:
