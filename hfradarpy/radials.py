@@ -759,11 +759,13 @@ class Radial(fileParser):
                 For gridded dataset only, Antenna bearing (degrees) and angular resolution (degrees) of the radial grid.
                 Defaults to None which automatically infers the bearing based off of the radial data.
         """
+        # Make a copy so that the original radial object is not altered by this function
+        rcopy = copy.deepcopy(self)
 
         if model == "tabular":
-            ds = self._to_xarray_tabular(enhance)
+            ds = rcopy._to_xarray_tabular(enhance)
         elif model == "gridded":
-            ds = self._to_xarray_gridded(range_minmax=range_minmax, bearing=bearing, enhance=enhance)
+            ds = rcopy._to_xarray_gridded(range_minmax=range_minmax, bearing=bearing, enhance=enhance)
         else:
             raise ValueError("Please enter a valid data model type. Must be a string 'tabular' or 'gridded'")
         return ds
@@ -2030,11 +2032,15 @@ class Radial(fileParser):
                 Change manufacturer variables to meaningful variable names. Add attributes and other metadata. Defaults to True
             user_attributes (dictionary, optional): Dictionary containing metadata for the NetCDF. Defaults to None.
         """
+
+        # Make a copy so that the original radial object is not altered by this function
+        rcopy = copy.deepcopy(self)
+
         # Make sure filename is converted into a Path object
         filename = Path(filename)
         os.makedirs(filename.parent.resolve(), exist_ok=True)
 
-        if not self.is_valid():
+        if not rcopy.is_valid():
             raise ValueError("Could not export ASCII data, the input file was invalid.")
 
         # If the filename does not have a .nc extension, we will add one.
@@ -2045,7 +2051,7 @@ class Radial(fileParser):
         if os.path.isfile(filename):
             os.remove(filename)
 
-        xds = self.to_xarray(model, range_minmax=range_minmax, bearing=bearing, enhance=enhance)
+        xds = rcopy.to_xarray(model, range_minmax=range_minmax, bearing=bearing, enhance=enhance)
 
         # if 'tabular' in netcdf_type:
         #     xds = self.to_xarray_tabular(enhance=enhance)
@@ -2094,6 +2100,7 @@ class Radial(fileParser):
 
         xds.to_netcdf(filename, encoding=encoding, format="netCDF4", engine="netcdf4", unlimited_dims=["time"])
 
+
     def to_ruv(self, filename, validate=True, overwrite=False):
         """
         Create a CODAR Radial (.ruv) file from radial instance
@@ -2104,17 +2111,20 @@ class Radial(fileParser):
             overwrite (bool): If True, an exported file can overwrite an existing file with the same name. Defaults to False.
 
         """
+        # Make a copy so that the original radial object is not altered by this function
+        rcopy = copy.deepcopy(self)
+
         # Make sure filename is converted into a Path object
         filename = Path(filename)
 
         if validate:
-            if not self.is_valid():
+            if not rcopy.is_valid():
                 raise ValueError("Could not export ASCII data, the input file was invalid.")
 
         # Ensure that the filename passed into the export function is not the same as the filename that we read in.
         # # We do not want to overwrite the original wave file by accident.
         if not overwrite:
-            if self.full_file == str(filename):
+            if rcopy.full_file == str(filename):
                 suffix = f'.mod{filename.suffix}'
                 filename = filename.with_suffix(suffix)
 
@@ -2122,10 +2132,9 @@ class Radial(fileParser):
             os.remove(filename)
 
         os.makedirs(os.path.dirname(filename), exist_ok=True)
-        rcopy = copy.deepcopy(self)
         with open(filename, "w") as f:
             # Write header
-            for metadata_key, metadata_value in self.metadata.items():
+            for metadata_key, metadata_value in rcopy.metadata.items():
                 if "ProcessedTimeStamp" in metadata_key:
                     break
                 else:
@@ -2133,32 +2142,32 @@ class Radial(fileParser):
                     f.write("%{}: {}\n".format(metadata_key, metadata_value))
 
             # Write data tables. Anything beyond the first table is commented out.
-            for table in self._tables.keys():
+            for table in rcopy._tables.keys():
 
-                if "datetime" in self._tables[table]["data"].keys():
-                    self._tables[table]["data"] = self._tables[table]["data"].drop(["datetime"], axis=1)
+                if "datetime" in rcopy._tables[table]["data"].keys():
+                    rcopy._tables[table]["data"] = rcopy._tables[table]["data"].drop(["datetime"], axis=1)
 
-                for table_key, table_value in self._tables[table].items():
+                for table_key, table_value in rcopy._tables[table].items():
                     if table_key != 'data':
                         if (table_key == 'TableType') & (table == 1):
-                            if 'QCD' in self.metadata:
-                                for qcd_info in self.metadata['QCD']:
+                            if 'QCD' in rcopy.metadata:
+                                for qcd_info in rcopy.metadata['QCD']:
                                     f.write('%{}\n'.format(qcd_info))
-                            if 'QCTest' in self.metadata:
+                            if 'QCTest' in rcopy.metadata:
                                 f.write('%QCFileVersion: 2.0.0\n')
                                 f.write(
                                     '%QCReference: Quality control reference: IOOS QARTOD HF Radar ver 2.0 June 2022\n')
                                 f.write('%QCFlagDefinitions: 1=pass 2=not_evaluated 3=suspect 4=fail 9=missing_data\n')
                                 f.write('%QCTestFormat: "test_name [qc_thresholds]: test_result"\n')
 
-                                for test in self.metadata["QCTest"].values():
+                                for test in rcopy.metadata["QCTest"].values():
                                     f.write("%QCTest: {}\n".format(test))
                             f.write("%{}: {}\n".format(table_key, table_value))
                         elif table_key == "TableColumns":
-                            f.write("%TableColumns: {}\n".format(len(self._tables[table]["data"].columns)))
+                            f.write("%TableColumns: {}\n".format(len(rcopy._tables[table]["data"].columns)))
                         elif table_key == "TableColumnTypes":
                             f.write("%TableColumnTypes: {}\n".format(
-                                " ".join(self._tables[table]["data"].columns.to_list())))
+                                " ".join(rcopy._tables[table]["data"].columns.to_list())))
                         elif table_key == "TableStart":
                             f.write("%{}: {}\n".format(table_key, table_value))
                         elif table_key == "_TableHeader":
@@ -2168,39 +2177,39 @@ class Radial(fileParser):
 
                 if table == 1:
                     # Fill NaN with 999.000 which is the standard fill value for codar lluv files
-                    self.data = self.data.fillna(999.000)
+                    rcopy.data = rcopy.data.fillna(999.000)
 
                     try:
-                        self.data["LOND"] = self.data["LOND"].apply(lambda x: "{:.7f}".format(x))
-                        self.data["LATD"] = self.data["LATD"].apply(lambda x: "{:.7f}".format(x))
-                        self.data["ESPC"] = self.data["ESPC"].apply(lambda x: "{:.3f}".format(x))
-                        if "ETMP" in self.data.columns:
-                            self.data["ETMP"] = self.data["ETMP"].apply(lambda x: "{:.3f}".format(x))
-                        self.data["BEAR"] = self.data["BEAR"].apply(lambda x: "{:.1f}".format(x))
-                        self.data["HEAD"] = self.data["HEAD"].apply(lambda x: "{:.1f}".format(x))
+                        rcopy.data["LOND"] = rcopy.data["LOND"].apply(lambda x: "{:.7f}".format(x))
+                        rcopy.data["LATD"] = rcopy.data["LATD"].apply(lambda x: "{:.7f}".format(x))
+                        if "ESPC" in rcopy.data.columns:
+                            rcopy.data["ESPC"] = rcopy.data["ESPC"].apply(lambda x: "{:.3f}".format(x))
+                        if "ETMP" in rcopy.data.columns:
+                            rcopy.data["ETMP"] = rcopy.data["ETMP"].apply(lambda x: "{:.3f}".format(x))
+                        rcopy.data["BEAR"] = rcopy.data["BEAR"].apply(lambda x: "{:.1f}".format(x))
+                        rcopy.data["HEAD"] = rcopy.data["HEAD"].apply(lambda x: "{:.1f}".format(x))
                     except:
-                        self = rcopy
                         print("Unexpected error in formatting one of these columns: LOND LATD ESPC ETMP BEAR HEAD")
 
                     # Convert _TableHeader to a new dataframe and concatenate to dataframe containing radial data
                     # This allows for the output format to follow CODARS CTF specifications
                     # The below block of code adds the weird header and units format that codar uses in their files
-                    row_df = pd.DataFrame([self._tables[1]["_TableHeader"][1]],
-                                          columns=self._tables[1]["_TableHeader"][0])
-                    self.data.columns = self._tables[1]["_TableHeader"][0]
-                    self.data = pd.concat([row_df, self.data], ignore_index=True)
-                    self.data.insert(0, "%%", np.nan)  # Insert column at the beginning of dataframe of NaNs
-                    self.data.iloc[
-                        0, self.data.columns.get_loc("%%")] = "%%"  # make the first row in the first column a '%%'
+                    row_df = pd.DataFrame([rcopy._tables[1]["_TableHeader"][1]],
+                                          columns=rcopy._tables[1]["_TableHeader"][0])
+                    rcopy.data.columns = rcopy._tables[1]["_TableHeader"][0]
+                    rcopy.data = pd.concat([row_df, rcopy.data], ignore_index=True)
+                    rcopy.data.insert(0, "%%", np.nan)  # Insert column at the beginning of dataframe of NaNs
+                    rcopy.data.iloc[
+                        0, rcopy.data.columns.get_loc("%%")] = "%%"  # make the first row in the first column a '%%'
 
                     # Output data table to string
-                    # self.data.to_string(f, index=False, justify='center', header=True, na_rep=' ')
-                    self.data.temp = re.sub(
-                        " %%", "%%", self.data.to_string(index=False, justify="right", header=True, na_rep=" ")
+                    # rcopy.data.to_string(f, index=False, justify='center', header=True, na_rep=' ')
+                    rcopy.data.temp = re.sub(
+                        " %%", "%%", rcopy.data.to_string(index=False, justify="right", header=True, na_rep=" ")
                     )
-                    f.write(self.data.temp)
+                    f.write(rcopy.data.temp)
                 else:
-                    table_alias = self._tables[table]
+                    table_alias = rcopy._tables[table]
                     table_alias["data"].insert(0, "%%", "%")
                     table_alias["data"] = table_alias["data"].fillna(999.000)
                     if table_alias["TableType"] == "rads rad1":
@@ -2248,8 +2257,9 @@ class Radial(fileParser):
                 f.write("%%\n")
 
             # Write footer containing processing information
-            f.write("%ProcessedTimeStamp: {}\n".format(self.metadata["ProcessedTimeStamp"]))
-            for tool in self.metadata["ProcessingTool"]:
+            if 'ProcessedTimeStamp' in rcopy.metadata.keys():
+                f.write("%ProcessedTimeStamp: {}\n".format(rcopy.metadata["ProcessedTimeStamp"]))
+            for tool in rcopy.metadata["ProcessingTool"]:
                 f.write("%ProcessingTool: {}\n".format(tool))
                 # f.write('%{}: {}\n'.format(footer_key, footer_value))
             f.write("%End:")
@@ -2303,7 +2313,7 @@ class Radial(fileParser):
                         + f"]: See result in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
-    def qc_qartod_valid_location(self, use_mask=False, res='low', angseg=None):
+    def qc_qartod_valid_location(self, use_mask=True, res='high', angseg=None):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)

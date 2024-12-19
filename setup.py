@@ -22,6 +22,10 @@ requirements = [
     "matplotlib",
     "cmocean",
     "joblib",
+    "basemap",
+    "geopy",
+    "oceans",
+    "pytest",
     ]
 
 test_requirements = [
