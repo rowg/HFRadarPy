@@ -496,10 +496,15 @@ class fileParser(object):
         wordList = list(filter(None, wordList))  # Remove empty elements
 
         # Check the header format
-        if ((header[172] == '-') and (header[175] == '-') and (header[190] == '-') and (header[194] == '-')):
-            newFormat = False
-        elif ((header[172] == '.') and (header[190] == '.')):
-            newFormat = True
+        # if ((header[172] == '-') and (header[175] == '-') and (header[190] == '-') and (header[194] == '-') ):
+        #     newFormat = False
+        # elif ((header[172] == '.') and (header[190] == '.')):
+        #     newFormat = True     
+        if 'LAENGE' in wordList:
+            if '-' in wordList[wordList.index("LAENGE")+1]:
+                newFormat = False
+            elif '.' in wordList[wordList.index("LAENGE")+1]:
+                newFormat = True  
 
             # Parse header
         if 'SAMPLES' in wordList:
@@ -610,15 +615,15 @@ class fileParser(object):
         radialData = pd.Series(np.nan, index=range(8))
 
         # Parse data
-        radialData.loc[0] = np.rad2deg(cellData['LonC'])
-        radialData.loc[1] = np.rad2deg(cellData['LatC'])
-        radialData.loc[4] = cellData['SNV'] / cellData['SNR']
-        radialData.loc[5], az21, dist = g.inv(siteLon, siteLat, radialData.loc[0], radialData.loc[1])
-        if radialData.loc[5] < 0:
-            radialData.loc[5] += 360  # keep angles clockwise from true North
+        radialData.loc[0] = np.rad2deg(float(cellData['LonC']))
+        radialData.loc[1] = np.rad2deg(float(cellData['LatC']))
+        radialData.loc[4] = float(cellData['SNV']) / float(cellData['SNR'])
+        radialData.loc[5],az21,dist = g.inv(siteLon,siteLat,radialData.loc[0],radialData.loc[1])
+        if radialData.loc[5] <0:
+            radialData.loc[5] += 360    # keep angles clockwise from true North
         radialData.loc[2] = radialData.loc[4] * math.sin(math.radians(radialData.loc[5]))
         radialData.loc[3] = radialData.loc[4] * math.cos(math.radians(radialData.loc[5]))
-        radialData.loc[6] = cellData['SNS'] / cellData['SNR']
+        radialData.loc[6] = float(cellData['SNS']) / float(cellData['SNR'])
         radialData.loc[7] = radialData.loc[6] / math.sqrt(cellData['KUR'])
 
         return radialData
