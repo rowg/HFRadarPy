@@ -2,7 +2,7 @@ import os
 import re
 import numpy as np
 import datetime as dt
-from hfradarpy.ctf import CTFParser
+from hfradarpy.common import fileParser
 from pathlib import Path
 import pandas as pd
 import logging
@@ -33,12 +33,12 @@ def concat(flist):
     return df
 
 
-class Diags(CTFParser):
+class Diags(fileParser):
     """
     Diagnostics Subclass.
 
     This class should be used when loading a CODAR diagnostic (.hdt/.rdt/.xdt) file. 
-    This class inherits the generic LLUV class from hfradarpy/ctf.py 
+    This class inherits the generic LLUV class from hfradarpy/common.py 
     """
 
     def __init__(self, fname, ):

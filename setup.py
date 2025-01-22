@@ -22,6 +22,10 @@ requirements = [
     "matplotlib",
     "cmocean",
     "joblib",
+    "basemap",
+    "geopy",
+    "oceans",
+    "pytest",
     ]
 
 test_requirements = [
@@ -62,7 +66,7 @@ setup(
     include_package_data=True,
     test_suite="tests",
     tests_require=test_requirements,
-    url="https://github.com/rucool/hfradarpy",
+    url="https://github.com/rowg/hfradarpy",
     version=versioneer.get_version(),
     cmdclass=versioneer.get_cmdclass(),
     zip_safe=False,

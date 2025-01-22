@@ -1,0 +1,198 @@
+{
+    "TIME": {
+        "dtype": "float64"
+    },
+    "BEAR": {
+        "dtype": "float32"
+    },
+    "RNGE": {
+        "dtype": "float32"
+    },
+    "DEPTH": {
+        "dtype": "float32"
+    },
+    "LATITUDE": {
+        "dtype": "float32",
+        "fill_value": ""    
+    },
+    "LONGITUDE": {
+        "dtype": "float32",
+        "fill_value": "" 
+    },
+    "crs": {
+        "dtype": "int16"
+    },
+    "SDN_CRUISE": {
+    },
+    "SDN_STATION": {
+    },
+    "SDN_LOCAL_CDI_ID": {
+    },
+    "SDN_EDMO_CODE": {
+        "dtype": "int16"
+    },
+    "SDN_REFERENCES": {
+    },
+    "SDN_XLINK": {
+    },
+    "RDVA": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "DRVA": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "EWCT": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "NSCT": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "MAXV": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "MINV": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "ESPC": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "ETMP": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "HCSS": {
+        "dtype": "int32",
+        "scale_factor": 1e-06,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "EACC": {
+        "dtype": "int16",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },    
+    "ERSC": {
+        "dtype": "int16",
+        "fill_value": "" 
+    },
+    "ERTC": {
+        "dtype": "int16",
+        "fill_value": "" 
+    },
+    "XDST": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 			  
+    },
+    "YDST": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "SPRC": {
+        "dtype": "int16",
+        "fill_value": "" 
+    },
+    "NARX": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "NATX": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "SLTR": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "SLNR": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "SLTT": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "SLNT": {
+        "dtype": "int32",
+        "scale_factor": 0.001,
+        "add_offset": 0.0,
+        "fill_value": "" 
+    },
+    "SCDR": {
+    },
+    "SCDT": {
+    },
+    "TIME_QC": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "POSITION_QC": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "DEPTH_QC": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "QCflag": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "OWTR_QC": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "MDFL_QC": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "VART_QC": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "CSPD_QC": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "AVRB_QC": {
+        "dtype": "int8",
+        "fill_value": "" 
+    },
+    "RDCT_QC": {
+        "dtype": "int8",
+        "fill_value": "" 
+    }
+}

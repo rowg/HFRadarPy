@@ -25,7 +25,7 @@ def test_codar_radial_to_tabular_netcdf():
     rad1.to_netcdf(str(nc_file), model="tabular", enhance=True)
 
     # Convert it to an xarray Dataset with no variable
-    # or attribte enhancements
+    # or attribute enhancements
     xds2 = rad1.to_xarray("tabular", enhance=False)
 
     # Convert it to xarray Dataset with increased usability
@@ -121,7 +121,7 @@ def test_wera_radial_to_tabular_netcdf():
     rad1.to_netcdf(str(nc_file), model="tabular")
 
     # Convert it to an xarray Dataset with no variable
-    # or attribte enhancements
+    # or attribute enhancements
     xds2 = rad1.to_xarray("tabular", enhance=False)
 
     # Convert it to xarray Dataset with increased usability
@@ -150,7 +150,7 @@ def test_wera_radial_to_gridded_netcdf():
     rad1.to_netcdf(str(nc_file), model="gridded")
 
     # Convert it to an xarray Dataset with no variable
-    # or attribte enhancements
+    # or attribute enhancements
     xds2 = rad1.to_xarray("gridded", enhance=False)
 
     # Convert it to xarray Dataset with increased usability
@@ -211,7 +211,7 @@ def test_wera_raw_to_quality_gridded_nc():
     xds2 = rad1.to_xarray("gridded", enhance=True)
 
     with xr.open_dataset(nc_file) as xds1:
-        assert len(xds1.QCTest) == 3  # no VFLG column so one test not run
+        assert len(xds1.QCTest) == 4  # all QC tests should have run
         # The two enhanced files should be identical
         assert xds1.identical(xds2)
 
@@ -231,7 +231,7 @@ def test_wera_raw_to_quality_tabular_nc():
     xds2 = rad1.to_xarray("tabular", enhance=True)
 
     with xr.open_dataset(nc_file) as xds1:
-        assert len(xds1.QCTest) == 3  # no VFLG column so one test not run
+        assert len(xds1.QCTest) == 4  # all QC tests should have run
         # The two enhanced files should be identical
         assert xds1.identical(xds2)
 
@@ -248,7 +248,7 @@ def test_miami_radial_gridded_nc():
     rad1.to_netcdf(str(nc_file), model="gridded")
 
     # Convert it to an xarray Dataset with no variable
-    # or attribte enhancements
+    # or attribute enhancements
     xds2 = rad1.to_xarray("gridded", enhance=False)
 
     # Convert it to xarray Dataset with increased usability
@@ -278,7 +278,7 @@ def test_miami_radial_tabular_nc():
     # rad1.export(str(nc_file), file_type='netcdf', model='tabular')
 
     # Convert it to an xarray Dataset with no variable
-    # or attribte enhancements
+    # or attribute enhancements
     xds2 = rad1.to_xarray("tabular", enhance=False)
     # xds2 = rad1.to_xarray_tabular(enhance=False)
 

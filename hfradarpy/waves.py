@@ -2,7 +2,7 @@ import datetime as dt
 import pandas as pd
 import re
 import xarray as xr
-from hfradarpy.ctf import CTFParser
+from hfradarpy.common import fileParser
 from hfradarpy.io.nc import make_encoding
 import numpy as np
 import os
@@ -36,12 +36,12 @@ def concat(wave_list, enhance=False):
     return ds.sortby("time")
 
 
-class Waves(CTFParser):
+class Waves(fileParser):
     """
     Waves Subclass.
 
     This class should be used when loading a CODAR wave (.wls) file. This class utilizes the generic LLUV class from
-    ~/hfradarpy/ctf.py in order to load CODAR wave files
+    ~/hfradarpy/common.py in order to load CODAR wave files
     """
 
     def __init__(self, fname, replace_invalid=True):
