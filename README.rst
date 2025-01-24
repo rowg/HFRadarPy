@@ -2,14 +2,6 @@
 HFRadarPy
 =========
 
-.. image:: https://github.com/rucool/hfradarpy/actions/workflows/python-package.yml/badge.svg
-
-.. image:: https://img.shields.io/pypi/v/hfradarpy.svg
-    :target: https://pypi.python.org/pypi/hfradarpy
-
-.. image:: https://readthedocs.org/projects/hfradarpy/badge/?version=latest
-        :target: https://hfradarpy.readthedocs.io/en/latest/?version=latest
-        :alt: Documentation Status 
 
 .. .. image:: https://circleci.com/gh/rucool/HFRadarPy/tree/master.svg?style=svg
 ..    :target: https://circleci.com/gh/rucool/HFRadarPy/tree/master
@@ -20,7 +12,7 @@ HFRadarPy
 
 
 
-Toolbox to read in High Frequency Radar (HFR) files written in CODAR Tabular Format (CTF).
+Toolbox to work with High Frequency Radar (HFR) files.
 
 
 * Free software: MIT license
@@ -29,8 +21,10 @@ Toolbox to read in High Frequency Radar (HFR) files written in CODAR Tabular For
 
 Features
 --------
-
-* TODO
+* Read in CODAR, WERA and University of Hawaii HFR files
+* Run quality control tests including QARTOD tests
+* Calculate total vectors from radials
+* Output results to CTF or NetCDF
 
 ============
 Installation
@@ -40,27 +34,29 @@ Installation
 Stable release
 --------------
 
-We recommend using miniconda to manage your Python environments. Download and follow the `Miniconda installation guide`_ for the appropriate
-Miniconda installer for your operating system. 
+We recommend using Miniforge to manage your Python environments. `Download the Miniforge installer`_ for your computer architecture and operating system.
+In a Terminal window, run the .sh file that was downloaded.
 
-.. _Miniconda installation guide: http://conda.pydata.org/miniconda.html
 
-Make sure to add the channel, `conda-forge`_, to your .condarc. You can
-find out more about conda-forge from their website:
+.. _Download the Miniforge installer: http://conda.pydata.org/miniconda.html
 
-.. _conda-forge: https://conda-forge.org/
+.. _latest release: https://conda-forge.org/download/
 
-You can do this with the following command:
+Add the channel, `conda-forge`_ with the following command in your Terminal:
 
 .. code-block:: console
 
         conda config --add channels conda-forge
 
-To install HFRadarPy, run this command in your terminal:
+You can find out more about conda-forge from their website:
+
+.. _conda-forge: https://conda-forge.org/
+
+Run this command to install HFRadarPy:
 
 .. code-block:: console
 
-    $ conda install hfradarpy
+    $ mamba install hfradarpy
 
 This method will always install the most recent stable release of HFRadarPy.
 
@@ -73,13 +69,13 @@ You can either clone the public repository:
 
 .. code-block:: console
 
-    $ git clone git://github.com/rucool/hfradarpy
+    $ git clone https://github.com/rowg/HFRadarPy.git
 
 Or download the `tarball`_:
 
 .. code-block:: console
 
-    $ curl -OJL https://github.com/rucool/hfradarpy/tarball/master
+    $ curl -OJL https://github.com/rowg/hfradarpy/tarball/master
 
 Once you have a copy of the source, you can should create a new conda/virtual environment:
 

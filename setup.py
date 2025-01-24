@@ -35,16 +35,14 @@ test_requirements = [
 setup(
     author="Michael Smith",
     author_email="michaesm@marine.rutgers.edu",
-    python_requires=">=3.7",
+    python_requires=">=3.10",
     classifiers=[
         "Development Status :: 2 - Pre-Alpha",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: MIT License",
         "Natural Language :: English",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
     ],
     description="Toolbox to read in High Frequency Radar (HFR) files written in CODAR Tabular Format (CTF).",
     entry_points={

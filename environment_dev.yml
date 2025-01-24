@@ -17,4 +17,7 @@ dependencies:
   - cmocean
   - jupyterlab
   - nb_conda_kernels
+  - basemap
+  - geopy
+  - oceans
   - pytest
