@@ -472,7 +472,11 @@ class fileParser(object):
         line = line.replace("\n", "")  # Strip the new line character from the end of the line
         line_split = line.split(":")
         key = line_split[0]  # save key variable
-        value = line_split[1].strip()  # save value variable and strip whitespace from value
+        if len(line_split) > 1: # save value variable and strip whitespace from valu
+            divider = ":"
+            value = divider.join(line_split[1:]).strip()
+        else:
+            value = line_split[1].strip()
         return key, value
 
     @staticmethod
