@@ -2677,7 +2677,8 @@ class Radial(fileParser):
             test_str] = f"qc_qartod_syntax ({test_str}) - Test applies to entire file. Thresholds=[N/A]: See results in column {test_str}"
         self.append_to_tableheader(test_str, "(flag)")
 
-    def qc_qartod_temporal_gradient(self, r0, gradient_temp_fail=54, gradient_temp_warn=36):
+    def qc_qartod_temporal_gradient(self, r0, gradient_temp_fail=54, gradient_temp_warn=36, apply_spatial_median=False):
+
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2710,20 +2711,40 @@ class Radial(fileParser):
             r0 (str or Path): Full path to the filename of the previous hourly radial.
             gradient_temp_fail (int, optional): Maximum Radial Speed (cm/s). Defaults to 54.
             gradient_temp_warn (int, optional): Warning Radial Speed (cm/s). Defaults to 36.
+            apply_spatial_median (boolean or dict, optional): An option to exclude data points in the
+              previous file that fail the spatial median QC test.  This variable is either a dictionary
+              containing the thresholds to use for the test or a boolean True or False.  If False (default),
+              the test is not applied. If True, the variable is redefined as a dictionary and the spatial
+              test is applied with default threshold settings provided in code below.
         """
+
+        spatial_median_metadata = 'Spatial Median QC not used'
+        if isinstance(apply_spatial_median, dict):
+            apply_spatial_median = apply_spatial_median
+            spatial_median_metadata = 'Spatial Median QC failures excluded'
+        elif apply_spatial_median == True:
+            apply_spatial_median = {"smed_range_cell_limit": 2.1, "smed_angular_limit": 10.0, "smed_current_difference": 30.0}
+            spatial_median_metadata = 'Spatial Median QC failures excluded'
+
         test_str = "Q206"
-        # self.data[test_str] = data
+
         self.metadata['QCTest'][
             test_str] = f"qc_qartod_temporal_gradient ({test_str}) - Test applies to each row. Thresholds=" \
                         + "[ " + f"gradient_temp_warn={str(gradient_temp_warn)} (cm/s*hr) " \
                         + f"gradient_temp_fail={str(gradient_temp_fail)} (cm/s*hr) " \
+                        + f"{spatial_median_metadata}" \
                         + f"]: See results in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
         if os.path.exists(r0):
             r0 = Radial(r0)
 
-            if r0.is_valid():
+            if apply_spatial_median and len(r0.data['VELO'])>0:
+                r0.initialize_qc()
+                r0.qc_qartod_spatial_median(**apply_spatial_median)
+                r0.data = r0.data[r0.data['Q205']!=4]
+
+            if r0.is_valid() and len(r0.data['VELO'])>0 and len(self.data['VELO'])>0: #criteria for data availability in both files :
 
                 merged = self.data.merge(r0.data, on=["LOND", "LATD"], how="left", suffixes=(None, "_x"),
                                          indicator="Exist")
@@ -2735,18 +2756,18 @@ class Radial(fileParser):
                 # If any point in the recent radial does not exist in the previous radial, set row as a not evaluated, 2, flag
                 self.data.loc[merged['Exist'] == 'left_only', test_str] = 2
 
-                # velocity is less than radial_max_speed but greater than radial_high_speed, set row as a warning, 3, flag
+                # If velocity difference is less than failure threshold but greater than warning threshold, set row as a warning, 3, flag
                 self.data.loc[(difference < gradient_temp_fail) & (difference > gradient_temp_warn), test_str] = 3
 
-                # if velocity is greater than radial_max_speed, set that row as a fail, 4, flag
+                # If velocity difference is greater than failure threshold, set that row as a fail, 4, flag
                 self.data.loc[(difference > gradient_temp_fail), test_str] = 4
-            else:
+            elif len(self.data['VELO']) > 0:  # criteria for data availability in current file
                 # Add new column to dataframe for test, and set every row as not_evaluated, 2, flag
                 self.data[test_str] = 2
                 logging.warning(
                     '{} is corrupt or contains no data. Setting column {} to not_evaluated flag'.format(r0, test_str))
 
-        else:
+        elif len(self.data['VELO']) > 0:  # criteria for data availability in current file
             # Add new column to dataframe for test, and set every row as not_evaluated, 2, flag
             self.data[test_str] = 2
             logging.warning(
