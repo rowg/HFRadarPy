@@ -2546,7 +2546,15 @@ class Radial(fileParser):
             Bcell = Bcell.astype(int)
             # Btable = np.column_stack((self.data['BEAR'], Bcell))  #only for debugging
 
-            Rcell = self.data["SPRC"]
+            if "SPRC" in self.data.columns:
+                Rcell = self.data["SPRC"]
+            else:
+                ranges = self.data['RNGE'].unique()
+                ranges_sorted = sorted(ranges)
+                intervals = pd.Series(ranges_sorted).diff()
+                range_interval = float(intervals.mode().iloc[0])
+                Rcell = (self.data['RNGE'] / range_interval).round().astype(int)
+
             # Rtable = np.column_stack((self.data['RNGE'], Rcell))   #only for debugging
 
             # place velocities into a matrix with rows defined as bearing cell# and columns as range cell#
@@ -2587,12 +2595,13 @@ class Radial(fileParser):
                     if not (np.isnan(BRind[bb][rr])):
                         diffcol[BRind[bb][rr]] = BRdiff[bb][rr]
             boolean = diffcol.abs() > smed_current_difference
+            self.data[test_str] = self.data[test_str].where(~boolean, other=4)
 
-        except TypeError:
-            diffcol = diffcol.astype(float)
-            boolean = diffcol.abs() > smed_current_difference
+        except:
+            self.data[test_str] = 2  # in case of an error, add column of "not evaluated" flags
+            logger.warning(f"qc_qartod_spatial_median did not run due to an error")
 
-        self.data[test_str] = self.data[test_str].where(~boolean, other=4)
+
         self.metadata['QCTest'][
             test_str] = f"qc_qartod_spatial_median ({test_str}) - Test applies to each row. Thresholds=" \
                         + "[ " + f"range_cell_limit={str(smed_range_cell_limit)} (range cells) " \
