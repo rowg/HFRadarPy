@@ -13,10 +13,9 @@ import re
 import io
 import os
 from pathlib import Path
-from common import fileParser, addBoundingBoxMetadata
+from hfradarpy.common import fileParser, addBoundingBoxMetadata
+from hfradarpy.calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, createLonLatGridFromTopLeftPointWera, lonlat2km
 from collections import OrderedDict
-from calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, \
-    createLonLatGridFromTopLeftPointWera
 import json
 import fnmatch
 import warnings
@@ -39,17 +38,23 @@ import geopy.distance
 logger = logging.getLogger(__name__)
 
 
-def radBinsInSearchRadius(cell, radial, sR, g):
+def radBinsInSearchRadius(cell, radial, sR, g, oi = 'False', sx=0, sy=0):
     """
     This function finds out which radial bins are within the spatthresh of the
     origin grid cell.
-    The WGS84 CRS is used for distance calculations.
+    The WGS84 CRS is used for distance calculations with g.inv
+    However if oi is set to True, the distance calculations use function lonlat2km
 
     INPUT:
         cell: Series containing longitudes and latitudes of the origin grid cells
         radial: Radial object
         sR: search radius in meters
         g: Geod object according to the Total CRS
+        oi_method: Set to True if using the OI totals computation method for an expanded search radius
+                   based on a formula using the decorrelation length scales sx and sy, default is False
+        sx: meridional decorrelation length in meters (for OI method only, defaults to 0)
+        sy: zonal decorrelation length in meters (for OI method only, defaults to 0)
+
 
     OUTPUT:
         radInSr: list of the radial bins falling within the search radius of the
@@ -59,10 +64,28 @@ def radBinsInSearchRadius(cell, radial, sR, g):
     cell = cell.to_numpy()
     radLon = radial.data['LOND'].to_numpy()
     radLat = radial.data['LATD'].to_numpy()
-    # Evaluate distances between origin grid cells and radial bins
-    az12, az21, cellToRadDist = g.inv(len(radLon) * [cell[0]], len(radLat) * [cell[1]], radLon, radLat)
-    # Figure out which radial bins are within the spatthresh of the origin grid cell
-    radInSR = np.where(cellToRadDist < sR)[0].tolist()
+
+    if oi == 'False':
+        # Compute the inverse geodesic problem (distance and azimuths)
+        # Evaluate distances between origin grid cells and radial bins
+        az12, az21, cellToRadDist = g.inv(len(radLon) * [cell[0]], len(radLat) * [cell[1]], radLon, radLat)
+        # Figure out which radial bins are within the spatthresh of the origin grid cell
+        radInSR = np.where(cellToRadDist < sR)[0].tolist()
+    else:
+        # finds distance in x and y with lonlat2km
+        dx,dy = lonlat2km( len(radLon) * [cell[0]],len(radLat) * [cell[1]], radLon, radLat)
+        # Convert azimuth1 (forward azimuth) to radians for trigonometric calculations
+        #azimuth1_rad = np.radians(az12)
+        # Calculate the zonal (east-west) and meridional (north-south) distances
+        #dx = cell2RadDist * np.sin(azimuth1_rad)  # East-West component
+        #dy = cell2RadDist * np.cos(azimuth1_rad)  # North-South component
+        # Figure out which radial bins are within the OI formula for radius of influence.
+        # The search radius is a function of the decorrelation scale. In theory, every radial
+        # could be thrown into the calculation, but it would be highly inefficient as points
+        # greater than a few decorrelation lengths away would have infinitesimally small weights.
+        # Currently using a factor of 2 as a limiting threshold:
+        normr = 2
+        radInSR = np.where(np.sqrt((dx / sx)**2 + (dy / sy)**2) < normr)[0].tolist()
 
     return radInSR
 
@@ -129,6 +152,104 @@ def totalLeastSquare(VelHeadStd):
         return u, v, C, Cgdop
 
 
+def totalOI(VelHeadLonLat, gridloc, mdlvar,errvar,sx,sy,oi_option='exponential'):
+    """
+    This function calculates the u/v components of a total vector from 2 to n
+    radial vector components using the OI method described in
+
+
+    INPUT:
+        VelHeadLonLat: DataFrame containing contributing radial velocities and bearings (in degrees True)
+        with longitude and latitude
+		gridloc: vector grid location where uv vector components are estimated
+        mdlvar: a priori model covariance of the surface currents
+                     In the pointwise approach, user can set the a priori
+                      model variance as a function of water depth, the
+                      length from the coastline, or constant.
+        errvar: observational error variance, which can be constant
+						or hourly standard deviation of radial velocity (HSTD, so called
+						temporal uncertainty). For example, if the observational
+						uncertainty in HF radar observations is 3-5 cm/s, the corresponding
+						error variance = 9-25 (cm/s)^2.
+						As a standard error,
+							HSTD^2/N can be used as the error variance.
+						N is the number of cross spectra within a given time period.
+						Although N is unknown, the bound of N is known. 1<= N <= 6.
+		sx,sy: decorrelation legnth scales
+		oi_option: option for correlation function; option == 1, Gaussian, option == 2, exponential function
+
+    OUTPUT:
+        u: U component of the total vector
+        v: V component of the total vector
+        xi: uncertainty normalized by the a priori model covariance. (2 by 2 matrix)
+			xi(0,0) : normalized uncertainty of u = <(u_hat - u)^2>/<u^2> (good :0, poor: 1)
+			xi(1,1) : normalized uncertainty of v = <(v_hat - v)^2>/<v^2> (good :0, poor: 1)
+			xi(0,1) : directional information of u and v = <(u_hat -u)(v_hat- v)>/sqrt(<u^2><v^2>)
+
+    REFERENCE: Kim, S.Y., Terrill, E.J. and Cornuelle, B.D., 2008. Mapping surface currents from
+    HF radar radial velocity measurements using optimal interpolation.
+    Journal of Geophysical Research: Oceans, 113(C10).
+
+    """
+    # Convert angles from true convention to math convention
+    VelHeadLonLat['HEAD'] = true2mathAngle(VelHeadLonLat['HEAD'].to_numpy())
+
+    nr = len(VelHeadLonLat['HEAD'])
+    #Form the angle(A) and radial_matrices
+    d2r = np.pi / 180
+    VelHeadLonLat['HEAD'] = VelHeadLonLat['HEAD'] * d2r
+
+    # Matrix R based on the length of errvar
+    if isinstance(errvar, int):
+        R = np.eye(nr) * errvar   # For constant error variance
+    else:
+        R = np.diag(errvar)  # For HSTD (hourly temporal uncertainty)
+
+
+    # P_ matrix (identity matrix scaled by mdlvar)
+    P_ = np.eye(2) * mdlvar
+
+
+    # lonlat2km equivalent
+    dx, dy = lonlat2km(VelHeadLonLat['LOND'], VelHeadLonLat['LATD'], gridloc['LOND'], gridloc['LATD'])
+
+    # Meshgrid operations for x and y locations
+    x1, x2 = np.meshgrid(VelHeadLonLat['LOND'], VelHeadLonLat['LOND'])
+    y1, y2 = np.meshgrid(VelHeadLonLat['LATD'], VelHeadLonLat['LATD'])
+    ang1, ang2 = np.meshgrid(VelHeadLonLat['HEAD'], VelHeadLonLat['HEAD'])
+
+    # lonlat2km for meshgrids
+    drx_, dry_ = lonlat2km(x1, y1, x2, y2)
+
+    if oi_option == 'gaussian':
+        cmd = np.exp(-(dx ** 2 / sx ** 2 + dy ** 2 / sy ** 2))
+        w_ = np.exp(-(drx_ ** 2 / sx ** 2 + dry_ ** 2 / sy ** 2)) * mdlvar
+    elif oi_option == 'exponential':
+        cmd = np.exp(-np.sqrt(dx ** 2 / sx ** 2 + dy ** 2 / sy ** 2))
+        w_ = np.exp(-np.sqrt(drx_ ** 2 / sx ** 2 + dry_ ** 2 / sy ** 2)) * mdlvar
+    else:
+        warn()
+
+    # Compute cmd in components (u and v)
+    cmdu = cmd * np.cos(VelHeadLonLat['HEAD'])
+    cmdv = cmd * np.sin(VelHeadLonLat['HEAD'])
+    cmd = np.column_stack([cmdu, cmdv])
+
+    # Calculate cdd
+    cdd = w_ * (np.cos(ang1) * np.cos(ang2) + np.sin(ang1) * np.sin(ang2))
+
+    # Compute cmdicdd and final values
+    cmdicdd = np.dot(P_, np.dot(cmd.T, np.linalg.inv(cdd + R)))
+    a = np.dot(cmdicdd, VelHeadLonLat['VELO'])
+    xi = np.linalg.inv(P_) @ (P_ - np.dot(np.dot(cmdicdd, cmd), P_))
+
+    # Extract u and v from the vector a
+    u = a[0]
+    v = a[1]
+
+    return u, v, xi
+
+
 def makeTotalVector(rBins, rDF):
     """
     This function combines radial contributions to get the total vector for each
@@ -193,8 +314,123 @@ def makeTotalVector(rBins, rDF):
 
     return totalData
 
+def makeTotalVector_uwls(rBins, rDF):
+    """
+    This function combines radial contributions to get the total vector for each
+    grid cell.
+    The unweighted Least Square method is used for combination.
 
-def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2):
+    INPUT:
+        rBins: Series containing contributing radial indices.
+        rDF: DataFrame containing input Radials.
+
+    OUTPUT:
+        totalData: Series containing u/v components and related errors of
+                   total vector for each grid cell.
+    """
+    # set minimum number of contributing radial sites
+    minContrSites = 2
+    # set minimum number of contributing radial vectors
+    minContrRads = 3
+
+    # create output total Series
+    totalData = pd.Series(np.nan, index=range(9))
+    # only consider contributing radial sites
+    contrRad = rBins[rBins.str.len() != 0]
+    # check if there are at least two contributing radial sites
+    if contrRad.size >= minContrSites:
+        # loop over contributing radial indices for collecting velocities and angles
+        contributions = pd.DataFrame()
+        for idx in contrRad.index:
+            contrVel = rDF.loc[idx]['Radial'].data.VELO[contrRad[idx]]  # pandas Series
+            contrHead = rDF.loc[idx]['Radial'].data.HEAD[contrRad[idx]]  # pandas Series
+            contrStd = contrHead - contrHead + 1   # set all standard deviations to 1 for unweighted least squares method
+            contrStd = contrStd.rename("STD")  # pandas Series
+            contributions = pd.concat(
+                [contributions, pd.concat([contrVel, contrHead, contrStd], axis=1)])  # pandas DataFrame
+
+        # check if there are at least three contributing radial vectors
+        if len(contributions.index) >= minContrRads:
+            # combine radial contributions to get total vector for the current grid cell
+            u, v, C, Cgdop = totalLeastSquare(contributions)
+
+            if not math.isnan(u):
+                # populate Total Series
+                totalData.loc[0] = u  # VELU
+                totalData.loc[1] = v  # VELV
+                totalData.loc[2] = np.sqrt(u ** 2 + v ** 2)  # VELO
+                totalData.loc[3] = (360 + np.arctan2(u, v) * 180 / np.pi) % 360  # HEAD
+                totalData.loc[4] = math.sqrt(C[0, 0])  # UQAL
+                totalData.loc[5] = math.sqrt(C[1, 1])  # VQAL
+                totalData.loc[6] = C[0, 1]  # CQAL
+                totalData.loc[7] = math.sqrt(np.abs(Cgdop.trace()))  # GDOP
+                totalData.loc[8] = len(contributions.index)  # NRAD
+
+    return totalData
+
+def makeTotalVector_oi(rBins,rDF,mdlvar,errvar,sx,sy,oi_option='exponential'):
+    """
+    This function combines radial contributions to get the total vector for each
+    grid cell.
+    The optimal interpolation method is used for combination.
+
+    INPUT:
+        rBins: Series containing contributing radial indices.
+        rDF: DataFrame containing input Radials.
+
+    OUTPUT:
+        totalData: Series containing u/v components and related errors of
+                   total vector for each grid cell.
+    """
+
+
+    # separate out the grid location information from rBins
+    gridloc = rBins[['LOND','LATD']]
+    rBins = rBins.drop(['LOND', 'LATD'],inplace=False)
+
+    # set minimum number of contributing radial sites
+    minContrSites = 2
+    # set minimum number of contributing radial vectors
+    minContrRads = 3
+
+    # create output total Series
+    totalData = pd.Series(np.nan, index=range(9))
+    # only consider contributing radial sites
+    contrRad = rBins[rBins.str.len() != 0]
+    # check if there are at least two contributing radial sites
+    if contrRad.size >= minContrSites:
+        # loop over contributing radial indices for collecting velocities and angles
+        contributions = pd.DataFrame()
+        for idx in contrRad.index:
+            contrVel = rDF.loc[idx]['Radial'].data.VELO[contrRad[idx]]  # pandas Series
+            contrHead = rDF.loc[idx]['Radial'].data.HEAD[contrRad[idx]]  # pandas Series
+            contrLon = rDF.loc[idx]['Radial'].data.LOND[contrRad[idx]]
+            contrLat = rDF.loc[idx]['Radial'].data.LATD[contrRad[idx]]
+            contributions = pd.concat(
+                [contributions, pd.concat([contrVel, contrHead, contrLon, contrLat], axis=1)])  # pandas DataFrame
+
+        # check if there are at least three contributing radial vectors
+        if len(contributions.index) >= minContrRads:
+            # combine radial contributions to get total vector for the current grid cell
+            u, v, xi = totalOI(contributions,gridloc,mdlvar,errvar,sx,sy,oi_option)
+
+            if not math.isnan(u):
+                # populate Total Series
+                totalData.loc[0] = u  # VELU
+                totalData.loc[1] = v  # VELV
+                totalData.loc[2] = np.sqrt(u ** 2 + v ** 2)  # VELO
+                totalData.loc[3] = (360 + np.arctan2(u, v) * 180 / np.pi) % 360  # HEAD
+                totalData.loc[4] = math.sqrt(xi[0, 0])  # Uerr, normalized uncertainty of u (good: 0 poor: 1)
+                totalData.loc[5] = math.sqrt(xi[1, 1])  # Verr, normalized uncertainty of v (good: 0 poor: 1)
+                totalData.loc[6] = xi[0, 1]  # directional info of u and v
+                totalData.loc[7] = np.nan  # GDOP not available with this method
+                totalData.loc[8] = len(contributions.index)  # NRAD
+
+    return totalData
+
+
+
+def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None):
     """
     This function generataes total vectors from radial measurements using the
     weighted Least Square method for combination.
@@ -207,6 +443,13 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2):
         gRes: grid resoultion in meters
         tStp: timestamp in datetime format (YYYY-MM-DD hh:mm:ss)
         minContrSites: minimum number of contributing radial sites (default to 2)
+        method: can be 'wls','uwls' or 'oi', default is 'wls'
+        mdlvar: model variance (for OI method only)
+        errvar: error variance (for OI method only)
+        sx: x decorrelation length scale (for OI method only)
+        sy: y decorrelation length scale (for OI method only)
+        oi_weighting: either 'gaussian' or 'exponential' (for OI method only, default to 'exponential')
+        tempthreshold: currently not used, was an option in hfrprogs to allow for a window of timestamps for radial contributions
 
     OUTPUT:
         Tcomb: Total object generated by the combination
@@ -283,21 +526,43 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2):
         combineRadBins = pd.DataFrame(columns=range(len(Tcomb.data.index)))
 
         # Figure out which radial bins are within the spatthresh of each grid cell
+        if method == 'oi':
+            oi = 'True'
+        else:
+            oi = 'False'
+
         for Rindex, Rrow in rDF.iterrows():
             rad = Rrow['Radial']
-            thisRadBins = Tcomb.data.loc[:, ['LOND', 'LATD']].apply(lambda x: radBinsInSearchRadius(x, rad, sRad, g),
+            thisRadBins = Tcomb.data.loc[:, ['LOND', 'LATD']].apply(lambda x: radBinsInSearchRadius(x, rad, sRad, g, oi, sx, sy),
                                                                     axis=1)
+
             combineRadBins.loc[Rindex] = thisRadBins
+
+        #xylon = Tcomb.data.loc[:, ['LOND', 'LATD']]
 
         # Loop over grid points and pull out contributing radial vectors
         combineRadBins = combineRadBins.T
-        totData = combineRadBins.apply(lambda x: makeTotalVector(x, rDF), axis=1)
+        gridpoints = Tcomb.data[['LOND', 'LATD']]
+        combineRadBins['LOND'] = gridpoints['LOND']
+        combineRadBins['LATD'] = gridpoints['LATD']
 
+
+        if method == 'wls':
+           totData = combineRadBins.apply(lambda x: makeTotalVector(x, rDF), axis=1)
+        elif method == 'uwls':
+           totData = combineRadBins.apply(lambda x: makeTotalVector_uwls(x, rDF), axis=1)
+        elif method == 'oi':
+           totData = combineRadBins.apply(lambda x,: makeTotalVector_oi(x,rDF,mdlvar,errvar,sx,sy,oi_option), axis=1)
+        else:
+            warn = 'No combination performed: not a valid combination method'
         # Assign column names to the combination DataFrame
         totData.columns = ['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']
 
         # Fill Total with combination results
-        Tcomb.data[['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']] = totData
+        if method == 'oi':
+            Tcomb.data[['VELU', 'VELV', 'VELO', 'HEAD', 'UERR', 'VERR', 'DIRI', 'GDOP', 'NRAD']] = totData
+        else:
+            Tcomb.data[['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']] = totData
 
         # Mask out vectors on land
         Tcomb.mask_over_land(subset=True)

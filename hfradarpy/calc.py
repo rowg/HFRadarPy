@@ -439,3 +439,46 @@ def evaluateGDOP(cell, siteLon, siteLat, g):
     gdop = math.sqrt(Cgdop.trace())
     
     return gdop
+
+
+def lonlat2km(lon_orig, lat_orig, lon, lat):
+    """
+    Convert lat/lon to distances (km) referenced to a lon/lat point.
+
+    This function will convert longitude/latitude pairs to distances in
+    kilometers east and west of a reference longitude/latitude point.  The
+    equation was obtained from Bowditch's book "The American Practical
+    Navigator, 1995 edition, page 552."
+
+    Adapted for Python from Matlab code written by Mike Cook under
+    Copyright (C) 2007 Mike Cook, Naval Postgraduate School
+    License: GPL (Gnu Public License)
+
+    Parameters:
+        lon_orig (float): Reference longitude
+        lat_orig (float): Reference latitude
+        lon (float or array-like): Target longitude(s)
+        lat (float or array-like): Target latitude(s)
+
+    Returns:
+        east (float or np.ndarray): Distance east from reference point (in km)
+        north (float or np.ndarray): Distance north from reference point (in km)
+    """
+
+    con = np.deg2rad(lat_orig)
+
+    # Calculate meters per degree latitude and longitude
+    ymetr = (111132.92
+             - 559.82 * np.cos(2 * con)
+             + 1.175 * np.cos(4 * con)
+             - 0.0023 * np.cos(6 * con))
+
+    xmetr = (111412.84 * np.cos(con)
+             - 93.50 * np.cos(3 * con)
+             + 0.0118 * np.cos(5 * con))
+
+    # Compute east and north distances in kilometers
+    east = (np.array(lon) - lon_orig) * xmetr / 1000
+    north = (np.array(lat) - lat_orig) * ymetr / 1000
+
+    return east, north
