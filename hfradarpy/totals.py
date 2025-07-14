@@ -750,7 +750,7 @@ class Total(fileParser):
             waterIndex: list containing the indices of total vectors lying on water.
         """
         # Load the reference file (GeoPandas "naturalearth_lowres")
-        mask_dir = '.hfradarpy'
+        mask_dir = Path(__file__).with_name(".hfradarpy")
         if (res == 'high'):
             maskfile = os.path.join(mask_dir, 'ne_10m_admin_0_countries.shp')
         else:
@@ -1807,6 +1807,200 @@ class Total(fileParser):
 
         self.metadata['QCTest'][
             testName] = 'Overall QC Flag - Test applies to each vector. Test checks if all QC tests are passed.'
+
+    def qc_qartod_gdop(self, maxGDOP=2):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        GDOP Threshold (Test 302)
+        This test labels total velocity vectors whose GDOP is smaller than a maximum GDOP threshold
+        with a “good data” flag. Otherwise, the vectors are labeled with a “bad data” flag.
+
+        INPUTS:
+            maxGDOP: maximum allowed GDOP for normal operations
+        """
+        # Set the test name
+        testName = 'Q302'
+
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:, testName] = 1
+
+        # set bad flag for velocities not passing the test
+        self.data.loc[(self.data['GDOP'] > maxGDOP), testName] = 4
+
+        self.metadata['QCTest'][testName] = 'qc_qartod_gdop - Test applies to each vector. ' \
+                                            + 'Threshold=[' + f'GDOP threshold={maxGDOP}]'
+
+    def qc_qartod_u_uncertainty(self, uerr=0.6):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        U Component Uncertainty (Test 306)
+
+        This test labels total velocity vectors whose uncertainty in the U component
+        (Uerr from the OI combination method) is smaller than a maximum uncertainty
+        threshold with a “good data” flag.
+        Otherwise, the vectors are labeled with a “bad data” flag.
+
+        INPUTS:
+            max_Uerr: maximum allowed U component uncertainty for normal operations
+        """
+        # Set the test name
+        testName = 'Q306'
+
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:, testName] = 1
+
+        # set bad flag for velocities not passing the test
+        self.data.loc[(self.data['UERR'] > maxGDOP), testName] = 4
+
+        self.metadata['QCTest'][testName] = 'qc_qartod_u_uncertainty - Test applies to each vector. ' \
+                                            + 'Threshold=[' + f'Threshold={max_Uerr}]'
+
+    def qc_qartod_v_uncertainty(self, uerr=0.6):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        V Component Uncertainty (Test 307)
+
+        This test labels total velocity vectors whose uncertainty in the V component
+        (Verr from the OI combination method) is smaller than a maximum uncertainty
+        threshold with a “good data” flag.
+        Otherwise, the vectors are labeled with a “bad data” flag.
+
+        INPUTS:
+            max_Verr: maximum allowed U component uncertainty for normal operations
+        """
+        # Set the test name
+        testName = 'Q307'
+
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:, testName] = 1
+
+        # set bad flag for velocities not passing the test
+        self.data.loc[(self.data['VERR'] > max_Verr), testName] = 4
+
+        self.metadata['QCTest'][testName] = 'qc_qartod_v_uncertainty - Test applies to each vector. ' \
+                                            + 'Threshold=[' + f'Threshold={max_Verr}]'
+
+
+    def qc_qartod_maximum_velocity(self, max_speed=250, high_speed=150):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        Max Threshold (Test 303)
+        Ensures that a radial current speed is not unrealistically high.
+
+        The maximum radial speed threshold (RSPDMAX) represents the maximum reasonable surface radial velocity
+        for the given domain.
+
+        Link: https://ioos.noaa.gov/ioos-in-action/manual-real-time-quality-control-high-frequency-radar-surface-current-data/
+
+        Args:
+            max_speed (int, optional):
+                Maximum total Speed (cm/s). Totals beyond this speed will be flagged a failure. Defaults to 250
+            high_speed (int, optional):
+                High total Speed (cm/s). Totals between high and max speed will be flagged suspect. Defaults to 150
+        """
+        test_str = "Q303"
+
+        self.data["VELO"] = self.data["VELO"].astype(float)  # make sure VELO is a float
+
+        # Add new column to dataframe for test, and set every row as passing, 1, flag
+        self.data[test_str] = 1
+
+        # velocity is less than radial_max_speed but greater than radial_high_speed, set that row as a warning, 3, flag
+        self.data.loc[
+            (self.data["VELO"].abs() < max_speed) & (self.data["VELO"].abs() > high_speed), test_str
+        ] = 3
+
+        # if velocity is greater than radial_max_speed, set that row as a fail, 4, flag
+        self.data.loc[(self.data["VELO"].abs() > max_speed), test_str] = 4
+
+        self.metadata['QCTest'][
+            test_str] = f"qc_qartod_maximum_velocity ({test_str}) - Test applies to each row. Thresholds=" \
+                        + "[ " + f"high_vel={str(high_speed)} (cm/s) " \
+                        + f"max_vel={str(max_speed)} (cm/s) " \
+                        + f"]: See results in column {test_str} below"
+        self.append_to_tableheader(test_str, "(flag)")
+
+    def qc_qartod_valid_location(self, use_mask=True, res='high'):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        Valid Location (Test 305)
+        Removes radial vectors placed over land or in other unmeasureable areas
+
+        Total vector coordinates are checked against a land mask file and if they are over land,
+        they are not included in total vector calculations.
+
+        Link: https://ioos.noaa.gov/ioos-in-action/manual-real-time-quality-control-high-frequency-radar-surface-current-data/
+
+        Args:
+            use_mask (bool, optional): Use mask_over_land function. Defaults to True.
+            res (string, optional): either 'low' or 'high', Defaults to high.
+       """
+
+        test_str = "Q305"
+        success = 0
+
+        if use_mask:
+            try:
+                self.data.loc[
+                    ~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
+                applied_test_str += f"(land mask {res} res)"
+                success = 1
+            except:
+                logger.warning(f"qc_qartod_valid_location hfradarpy land mask did not run successfully")
+
+        self.metadata["QCTest"][test_str] = f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: " \
+            + f"See results in column {test_str} below"
+
+        if success == 0:
+            self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
+            logger.warning(
+                f"qc_qartod_valid_location did not run, no {flag_column} column, land mask and angseg either not used or not successfully applied")
+
+        self.append_to_tableheader(test_str, "(flag)")
+
+
+    def qc_qartod_primary_flag(self, include=None):
+        """
+        A primary flag is a single flag set to the worst case of all QC flags within the data record.
+
+        Args:
+            include (list, optional):
+                list of quality control tests which should be included in the primary flag.
+                Defaults to None, which includes all tests.
+        """
+        test_str = "PRIM"
+
+        # Set summary flag column all equal to 1
+        self.data[test_str] = 1
+
+        # generate dictionary of executed qc tests found in the header
+        executed = dict()
+        for b in [x.split("-")[0].strip() for x in self.metadata["QCTest"].values()]:
+            i = b.split(" ")
+            executed[i[0]] = re.sub(r"[()]", "", i[1])
+
+        if include:
+            # only add qartod tests which were set by user to executed dictionary
+            included_tests = list({key: value for key, value in executed.items() if key in include}.values())
+        else:
+            included_tests = list(executed.values())
+
+        equals_3 = self.data[included_tests].eq(3).any(axis=1)
+        self.data[test_str] = self.data[test_str].where(~equals_3, other=3)
+
+        equals_4 = self.data[included_tests].eq(4).any(axis=1)
+        self.data[test_str] = self.data[test_str].where(~equals_4, other=4)
+
+        included_test_strs = ", ".join(included_tests)
+        self.metadata['QCTest'][
+            test_str] = f'qc_qartod_primary_flag ({test_str}) - Primary Flag - Highest flag value of {included_test_strs}' + '("not_evaluated" flag results ignored)'
+        self.append_to_tableheader(test_str, "(flag)")
+        # %QCFlagDefinitions: 1=pass 2=not_evaluated 3=suspect 4=fail 9=missing_data
 
     def file_type(self):
         """

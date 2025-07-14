@@ -2317,7 +2317,7 @@ class Radial(fileParser):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
-        Valid Location (Test 8)
+        Valid Location (Test 203)
         Removes radial vectors placed over land or in other unmeasureable areas
 
         Radial vector coordinates are checked against a reference file containing information about which locations
