@@ -79,146 +79,6 @@ def velocityMedianInDistLimits(cell, radData, distLim, g):
 
     return median
 
-
-###### COMMENT FROM LORENZO: ######
-######I WOULD REMOVE THIS FUNCTION FROM radials.py FILE AND PUT IT IN A HIGHER LEVEL SCRIPT - ANYWAY, IT SEEMS TO BE UNUSED IN THE TOOLBOX ######
-def qc_radial_file(radial_file, qc_values=None, export=None, save_path=None, clean=False, clean_path=None):
-    """
-    Main function to parse and qc radial files.
-
-    Setting clean to True will create two separate quality controlled radial files. Must set clean_path.
-    The first radial file with containing flag metadata will be saved to save_path. This file contains data along with flags.
-    The second radial file with data that failed qc removed will be saved to clean_path. This file does not contain any flags.
-
-
-    Args:
-        radial_file (str or Path):
-            Path to radial file or a Radial object
-        qc_values (dict, optional):
-            Dictionary containing thresholds for each QC test. Defaults to None.
-        export (str, optional):
-            None or 'radial' or 'netcdf-tabular' or 'netcdf-multidimensional'. Defaults to None.
-        save_path (str or Path, optional):
-            Path to save quality controlled radial file. Defaults to None.
-        clean (bool, optional):
-            Remove any row of data where the primary flag equals 4 (Failure flag). Defaults to False.
-        clean_path (str or Path, optional):
-            Path to save quality controlled radial file with data that fails qc removed. Defaults to None.
-
-    Returns:
-        Radial object: A quality controlled radial file.
-    """
-    qc_values = qc_values or dict(
-        qc_qartod_avg_radial_bearing=dict(reference_bearing=151, warning_threshold=15, failure_threshold=30),
-        qc_qartod_radial_count=dict(min_count=75.0, low_count=225.0),
-        qc_qartod_maximum_velocity=dict(max_speed=300.0, high_speed=100.0),
-        qc_qartod_spatial_median=dict(
-            radial_smed_range_cell_limit=2.1, radial_smed_angular_limit=10, radial_smed_current_difference=30
-        ),
-        qc_qartod_temporal_gradient=dict(gradient_temp_fail=32, gradient_temp_warn=25),
-        qc_qartod_primary_flag=dict(
-            include=[
-                "qc_qartod_syntax",
-                "qc_qartod_valid_location",
-                "qc_qartod_radial_count",
-                "qc_qartod_maximum_velocity",
-                "qc_qartod_spatial_median",
-            ]
-        ),
-    )
-
-    if not isinstance(radial_file, Radial):
-        r = Radial(radial_file)
-    else:
-        r = radial_file
-
-    if r.is_valid():
-        if clean:
-            rclean = copy.deepcopy(r)
-        t0 = r.time - dt.timedelta(hours=1)
-        previous_radial = "{}_{}{}".format(
-            "_".join(r.file_name.split("_")[:2]), t0.strftime("%Y_%m_%d_%H%M"), os.path.splitext(r.file_name)[1]
-        )
-        previous_full_file = os.path.join(os.path.dirname(r.full_file), previous_radial)
-        qc_keys = qc_values.keys()
-
-        # run high frequency radar qartod tests on open radial file
-        r.initialize_qc()
-        r.qc_qartod_syntax()
-
-        if "qc_qartod_maximum_velocity" in qc_keys:
-            r.qc_qartod_maximum_velocity(**qc_values["qc_qartod_maximum_velocity"])
-
-        # run valid location test whether or not there is an option specified in qc_values
-        if "qc_qartod_valid_location" in qc_keys:
-            r.qc_qartod_valid_location(
-                **qc_values["qc_qartod_valid_location"])  # allows the use_mask option to be passed to the test
-        else:
-            r.qc_qartod_valid_location()
-
-        if "qc_qartod_radial_count" in qc_keys:
-            r.qc_qartod_radial_count(**qc_values["qc_qartod_radial_count"])
-
-        if "qc_qartod_spatial_median" in qc_keys:
-            r.qc_qartod_spatial_median(**qc_values["qc_qartod_spatial_median"])
-
-        if "qc_qartod_temporal_gradient" in qc_keys:
-            r.qc_qartod_temporal_gradient(previous_full_file, **qc_values["qc_qartod_temporal_gradient"])
-
-        if "qc_qartod_stuck_value" in qc_keys:
-            r.qc_qartod_stuck_value(**qc_values["qc_qartod_stuck_value"])
-            # r.qc_qartod_stuck_value_v2(**qc_values['qc_qartod_stuck_value'])
-
-        if "qc_qartod_avg_radial_bearing" in qc_keys:
-            r.qc_qartod_avg_radial_bearing(**qc_values["qc_qartod_avg_radial_bearing"])
-
-        # --------------------------------------------------------------------------
-        # Tests that have not been included in the QARTOD manual
-        if "qc_qartod_stuck_value_version_2" in qc_keys:
-            r.qc_qartod_stuck_value_version_2(**qc_values["qc_qartod_stuck_value"])
-            # r.qc_qartod_stuck_value_v2(**qc_values['qc_qartod_stuck_value'])
-        # --------------------------------------------------------------------------
-
-        # Primary flag test is performed last
-        if "qc_qartod_primary_flag" in qc_keys:
-            r.qc_qartod_primary_flag(**qc_values["qc_qartod_primary_flag"])
-
-        if clean:
-            d = rclean.data
-            dqc = r.data
-            if "PRIM" in r.data:
-                rt = d[dqc["PRIM"] != 4]
-                rclean.data = rt
-
-                for key in rclean._tables.keys():
-                    table = rclean._tables[key]
-                    if "LLUV" in table["TableType"]:
-                        rclean._tables[1]["TableRows"] = rt.shape[0]
-                # else:
-                #   warning that it didn't update number of table rows
-            # else:
-            # warning of failure to update file, the original will be exported
-
-        # Export radial file to either a radial or netcdf
-        if export:
-            if export == "radial":
-                r.to_ruv(os.path.join(save_path, r.file_name))
-            elif export == "netcdf-tabular":
-                r.to_netcdf(os.path.join(save_path, r.file_name), "tabular")
-            elif export == "netcdf-gridded":
-                r.to_netcdf(os.path.join(save_path, r.file_name), "gridded")
-
-            if clean:
-                if export == "radial":
-                    rclean.to_ruv(os.path.join(clean_path, rclean.file_name))
-                elif export == "netcdf-tabular":
-                    rclean.to_netcdf(os.path.join(clean_path, rclean.file_name), "tabular", prepend_extension=True)
-                elif export == "netcdf-gridded":
-                    rclean.to_netcdf(os.path.join(clean_path, rclean.file_name), "gridded", prepend_extension=True)
-        else:
-            return r
-
-
 def concat(rlist, range_minmax=None, bearing=None,
            method="gridded", enhance=False, parallel=False):
     """
@@ -2962,6 +2822,97 @@ class Radial(fileParser):
 
         # Add new column to dataframe
         self.data[test_str] = result
+
+    def qc_operator_test(self, fail_all=False, suspect_all=False, flag_segment=None):
+        """
+        An operator can use this test to mark any radial as suspect or failing
+        based on their review of data/diagnostics and assessment of data quality.
+
+        Args:
+            fail_all (bool, optional): Set fail flag for all radials. Defaults to False.]
+            suspect_all (bool, optional): Set suspect flag for all radials. Defaults to False.]
+            flag_segment (array of dictionaries, optional): Used to set flags for specific areas (segments)
+                Each array element is a dictionary defined by the following keys:
+                range_min (int) :
+                    Minimum range given in kilometers
+                range_max (int) :
+                    Maximum range given in kilometers
+                bearingTrue_start (int) :
+                    Start bearing of a segment (The angular segment will start at this value given in
+                    degrees True and it will extend in a CLOCKWISE direction until it reaches the stop bearing.)
+                bearingTrue_stop (int) :
+                    Stop bearing of a segment (The angular segment begins at the start bearing and extends CLOCKWISE
+                    until it reaches this value given in degrees True.)
+                flag_value (int) : the flag value to assign to this segment
+       """
+
+        test_str = "Q211"
+        applied_test_str = ''
+        success = 0  # start with none of the tests running successfully
+
+        self.data[test_str] = 1  # add new column of passing values
+        if suspect_all and fail_all:
+            logger.warning(
+                f"Incompatible inputs fail_all=True and suspect_all=True. Result will be not evaluated.")
+            success = 0
+        elif fail_all:
+            self.data[test_str] = 4
+            applied_test_str += f"(all fail)"
+            success = 1
+        elif suspect_all:
+            self.data[test_str] = 3
+            applied_test_str += f"(all suspect)"
+            success = 1
+
+        if flag_segment:
+            try:
+                for seg in flag_segment:
+                    # find locations of radials in specified range and bearing limits and assign fail flags
+                    if seg['bearingTrue_stop'] - seg['bearingTrue_start'] > 0:
+                        try:
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= seg['bearingTrue_start']) & (
+                                        self.data["BEAR"] <= seg['bearingTrue_stop']), test_str
+                            ] = seg['flag_value']  # set to 4 where hfradarpy angseg sections are flagged
+                            success = 1
+                        except:
+                            logger.warning(
+                                f"qc_operator_test: segment not flagged")
+
+                    else:
+                        try:
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= seg['bearingTrue_start']) & (
+                                        self.data["BEAR"] <= 360), test_str
+                            ] = seg['flag_value']  # set to 4 where hfradarpy angseg sections are flagged
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= 0) & (
+                                        self.data["BEAR"] <= seg['bearingTrue_stop']), test_str
+                            ] = seg['flag_value']  # set to 4 where hfradarpy angseg sections are flagged
+                            success = 1
+                        except:
+                            logger.warning(
+                                f"qc_operator_test segment not flagged")
+                applied_test_str += f"(flagged segment as {flag_value})"
+            except:
+                logger.warning(f"qc_operator_test flag segment not applicable or did not run successfully")
+
+        self.metadata["QCTest"][
+            test_str] = f"qc_operator_test ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: " \
+                        + f"See results in column {test_str} below"
+
+        if success == 0:
+            self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
+            logger.warning(
+                f"qc_operator_test did not execute successfully")
+
+        self.append_to_tableheader(test_str, "(flag)")
 
     def qc_qartod_primary_flag(self, include=None):
         """
