@@ -19,6 +19,7 @@ def make_encoding(ds, time_start="seconds since 1970-01-01 00:00:00", comp_level
         encoding[k] = {"zlib": True, "complevel": comp_level, "_FillValue": np.float32(fillvalue)}
 
         if 0 not in shape:
+            # if the values are Python objects then convert them to strings
             if values.dtype.kind == "O":
                 values = values.astype("str")
 
