@@ -256,9 +256,10 @@ class Radial(fileParser):
                 # Remove the previous QCTest information in the header
                 if test_str in self.metadata['QCTest']:
                     del self.metadata['QCTest'][test_str]
+                return False
             else:
                 logger.warning(f"Cannot run QC test {test_str} more than once. Exiting test.")
-            return True
+                return True
         else:
             return False
 
