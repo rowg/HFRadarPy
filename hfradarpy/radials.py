@@ -2082,6 +2082,7 @@ class Radial(fileParser):
                     rcopy.data.columns = rcopy._tables[1]["_TableHeader"][0][0:rcopy.data.columns.shape[0]]
                     rcopy.data = pd.concat([row_df, rcopy.data], ignore_index=True)
                     rcopy.data.insert(0, "%%", np.nan)  # Insert column at the beginning of dataframe of NaNs
+                    rcopy.data["%%"] = rcopy.data["%%"].astype(object)
                     rcopy.data.iloc[
                         0, rcopy.data.columns.get_loc("%%")] = "%%"  # make the first row in the first column a '%%'
 
