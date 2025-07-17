@@ -38,7 +38,7 @@ import geopy.distance
 logger = logging.getLogger(__name__)
 
 
-def radBinsInSearchRadius(cell, radial, sR, g, oi = 'False', sx=0, sy=0):
+def radBinsInSearchRadius(cell, radial, sR, g, oi=False, sx=0, sy=0):
     """
     This function finds out which radial bins are within the spatthresh of the
     origin grid cell.
@@ -50,7 +50,7 @@ def radBinsInSearchRadius(cell, radial, sR, g, oi = 'False', sx=0, sy=0):
         radial: Radial object
         sR: search radius in meters
         g: Geod object according to the Total CRS
-        oi_method: Set to True if using the OI totals computation method for an expanded search radius
+        oi_method: (bool) Set to True if using the OI totals computation method for an expanded search radius
                    based on a formula using the decorrelation length scales sx and sy, default is False
         sx: meridional decorrelation length in meters (for OI method only, defaults to 0)
         sy: zonal decorrelation length in meters (for OI method only, defaults to 0)
@@ -65,7 +65,7 @@ def radBinsInSearchRadius(cell, radial, sR, g, oi = 'False', sx=0, sy=0):
     radLon = radial.data['LOND'].to_numpy()
     radLat = radial.data['LATD'].to_numpy()
 
-    if oi == 'False':
+    if not oi:
         # Compute the inverse geodesic problem (distance and azimuths)
         # Evaluate distances between origin grid cells and radial bins
         az12, az21, cellToRadDist = g.inv(len(radLon) * [cell[0]], len(radLat) * [cell[1]], radLon, radLat)
@@ -527,9 +527,9 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, method='wls',
 
         # Figure out which radial bins are within the spatthresh of each grid cell
         if method == 'oi':
-            oi = 'True'
+            oi = True
         else:
-            oi = 'False'
+            oi = False
 
         for Rindex, Rrow in rDF.iterrows():
             rad = Rrow['Radial']
@@ -543,8 +543,11 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, method='wls',
         # Loop over grid points and pull out contributing radial vectors
         combineRadBins = combineRadBins.T
         gridpoints = Tcomb.data[['LOND', 'LATD']]
-        combineRadBins['LOND'] = gridpoints['LOND']
-        combineRadBins['LATD'] = gridpoints['LATD']
+        # The OI method requires that longitude and latitude values to be included
+        # because of how it sets the radius of influence for inputs.
+        if oi:
+            combineRadBins['LOND'] = gridpoints['LOND']
+            combineRadBins['LATD'] = gridpoints['LATD']
 
 
         if method == 'wls':
