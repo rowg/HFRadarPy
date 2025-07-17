@@ -196,6 +196,18 @@ class fileParser(object):
                                 self.metadata[key] = value
                             elif "SiteSource" in line:
                                 site_source.append(value)
+                            elif "QCTestFormat" in line:
+                                # Handles the case in which a previously QC'ed file is loaded
+                                # so that QCTest metadata is preserved in the header
+                                # set up empty dictionary
+                                self.metadata['QCTest'] = {}
+                                self.metadata[key] = value
+                            elif "QCTest:" in line:
+                                # Handles the case in which a previously QC'ed file is loaded
+                                # so that QCTest metadata is preserved in the header
+                                # fill dictionary with test information
+                                match = re.search(r'\(([^)]+)\)', value)
+                                self.metadata['QCTest'][match.group(1)] = value
                             elif table_count > 0:
                                 if key == "ProcessingTool":
                                     processing_info.append(value)
