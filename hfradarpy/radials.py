@@ -2970,7 +2970,7 @@ class Radial(fileParser):
                         except:
                             logger.warning(
                                 f"qc_operator_test segment not flagged")
-                applied_test_str += f"(flagged segment as {flag_value})"
+                applied_test_str += f"(flagged segment as {seg['flag_value']})"
             except:
                 logger.warning(f"qc_operator_test flag segment not applicable or did not run successfully")
 
