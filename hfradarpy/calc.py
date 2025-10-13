@@ -482,3 +482,28 @@ def lonlat2km(lon_orig, lat_orig, lon, lat):
     north = (np.array(lat) - lat_orig) * ymetr / 1000
 
     return east, north
+
+def calc_index(x_ind, y_ind, X, Y, x, y):
+    for i, line in enumerate(x):
+        x_ind[i] = np.argmin(np.abs(X[1, :] - x[i]))
+        y_ind[i] = np.argmin(np.abs(Y[:, 1] - y[i]))
+    return x_ind, y_ind
+
+def gridded_index(X, Y, x, y, flag=np.nan):
+    """
+    This function gets the multidimensional index of 1d grid onto a 2d grid without interpolation. It calculates the
+    index based on the difference between two points.
+    :param X: x grid of values (M x N). Must be a numpy.ndarray
+    :param Y: y grid of values (M x N). Must be a numpy.ndarray
+    :param x: n vector of x values. Must be a numpy.ndarray
+    :param y: n vector of y values. Must be a numpy.ndarray
+    :param flag: value to use for missing data values of grid. Default is np.nan
+    :return:
+    """
+    # get mapping index
+    x_ind = np.tile(flag, x.size).astype(int)
+    y_ind = np.tile(flag, y.size).astype(int)
+
+    # Roll index calculation into other function so we can use numba for speedups
+    x_ind, y_ind = calc_index(x_ind, y_ind, X, Y, x, y)
+    return x_ind, y_ind

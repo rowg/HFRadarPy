@@ -14,11 +14,13 @@ import io
 import os
 from pathlib import Path
 from hfradarpy.common import fileParser, addBoundingBoxMetadata
-from hfradarpy.calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, createLonLatGridFromTopLeftPointWera, lonlat2km
+from hfradarpy.calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, createLonLatGridFromTopLeftPointWera, lonlat2km, gridded_index, calc_index
+from hfradarpy.io.nc import make_encoding
 from collections import OrderedDict
 import json
 import fnmatch
 import warnings
+import copy
 try:
     from mpl_toolkits.basemap import Basemap
 except Exception as err:
@@ -250,7 +252,7 @@ def totalOI(VelHeadLonLat, gridloc, mdlvar,errvar,sx,sy,oi_option='exponential')
     return u, v, xi
 
 
-def makeTotalVector(rBins, rDF):
+def makeTotalVector(rBins, rDF, minContrRads=3, minContrSites=2):
     """
     This function combines radial contributions to get the total vector for each
     grid cell.
@@ -259,15 +261,13 @@ def makeTotalVector(rBins, rDF):
     INPUT:
         rBins: Series containing contributing radial indices.
         rDF: DataFrame containing input Radials.
+        minContrSites: minimum number of contributing radial sites, defaults to 2.
+        minContrRads: minimum number of contributing radial vectors, defaults to 3.
 
     OUTPUT:
         totalData: Series containing u/v components and related errors of
                    total vector for each grid cell.
     """
-    # set minimum number of contributing radial sites
-    minContrSites = 2
-    # set minimum number of contributing radial vectors
-    minContrRads = 3
 
     # create output total Series
     totalData = pd.Series(np.nan, index=range(9))
@@ -314,7 +314,7 @@ def makeTotalVector(rBins, rDF):
 
     return totalData
 
-def makeTotalVector_uwls(rBins, rDF):
+def makeTotalVector_uwls(rBins, rDF, minContrRads=3, minContrSites=2):
     """
     This function combines radial contributions to get the total vector for each
     grid cell.
@@ -323,15 +323,15 @@ def makeTotalVector_uwls(rBins, rDF):
     INPUT:
         rBins: Series containing contributing radial indices.
         rDF: DataFrame containing input Radials.
+        minContrSites: minimum number of contributing radial sites, defaults to 2
+        minContrRads: minimum number of contributing radial vectors, defaults to 3
 
     OUTPUT:
         totalData: Series containing u/v components and related errors of
                    total vector for each grid cell.
+
     """
-    # set minimum number of contributing radial sites
-    minContrSites = 2
-    # set minimum number of contributing radial vectors
-    minContrRads = 3
+
 
     # create output total Series
     totalData = pd.Series(np.nan, index=range(9))
@@ -368,7 +368,7 @@ def makeTotalVector_uwls(rBins, rDF):
 
     return totalData
 
-def makeTotalVector_oi(rBins,rDF,mdlvar,errvar,sx,sy,oi_option='exponential'):
+def makeTotalVector_oi(rBins,rDF, mdlvar=1,errvar=1,sx=1,sy=1,minContrRads=3,minContrSites=2,oi_option='exponential'):
     """
     This function combines radial contributions to get the total vector for each
     grid cell.
@@ -377,6 +377,8 @@ def makeTotalVector_oi(rBins,rDF,mdlvar,errvar,sx,sy,oi_option='exponential'):
     INPUT:
         rBins: Series containing contributing radial indices.
         rDF: DataFrame containing input Radials.
+        minContrSites: minimum number of contributing radial sites, defaults to 2.
+        minContrRads: minimum number of contributing radial vectors, defaults to 3.
 
     OUTPUT:
         totalData: Series containing u/v components and related errors of
@@ -388,10 +390,6 @@ def makeTotalVector_oi(rBins,rDF,mdlvar,errvar,sx,sy,oi_option='exponential'):
     gridloc = rBins[['LOND','LATD']]
     rBins = rBins.drop(['LOND', 'LATD'],inplace=False)
 
-    # set minimum number of contributing radial sites
-    minContrSites = 2
-    # set minimum number of contributing radial vectors
-    minContrRads = 3
 
     # create output total Series
     totalData = pd.Series(np.nan, index=range(9))
@@ -422,15 +420,15 @@ def makeTotalVector_oi(rBins,rDF,mdlvar,errvar,sx,sy,oi_option='exponential'):
                 totalData.loc[3] = (360 + np.arctan2(u, v) * 180 / np.pi) % 360  # HEAD
                 totalData.loc[4] = math.sqrt(xi[0, 0])  # Uerr, normalized uncertainty of u (good: 0 poor: 1)
                 totalData.loc[5] = math.sqrt(xi[1, 1])  # Verr, normalized uncertainty of v (good: 0 poor: 1)
-                totalData.loc[6] = xi[0, 1]  # directional info of u and v
-                totalData.loc[7] = np.nan  # GDOP not available with this method
+                totalData.loc[6] = xi[0, 1]  # directional info of u and v (UV covariance)
+                totalData.loc[7] = math.sqrt(xi[0,0] ** 2 + xi[1,1] ** 2);  # OI Total Errors
                 totalData.loc[8] = len(contributions.index)  # NRAD
 
     return totalData
 
 
 
-def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None):
+def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True ):
     """
     This function generataes total vectors from radial measurements using the
     weighted Least Square method for combination.
@@ -443,6 +441,7 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, method='wls',
         gRes: grid resoultion in meters
         tStp: timestamp in datetime format (YYYY-MM-DD hh:mm:ss)
         minContrSites: minimum number of contributing radial sites (default to 2)
+        minContrRads: minimum number of contributing radial vectors (default to 3)
         method: can be 'wls','uwls' or 'oi', default is 'wls'
         mdlvar: model variance (for OI method only)
         errvar: error variance (for OI method only)
@@ -553,28 +552,26 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, method='wls',
         if method == 'wls':
            totData = combineRadBins.apply(lambda x: makeTotalVector(x, rDF), axis=1)
         elif method == 'uwls':
-           totData = combineRadBins.apply(lambda x: makeTotalVector_uwls(x, rDF), axis=1)
+           totData = combineRadBins.apply(lambda x: makeTotalVector_uwls(x, rDF, minContrRads=minContrRads, minContrSites=minContrSites), axis=1)
         elif method == 'oi':
-           totData = combineRadBins.apply(lambda x,: makeTotalVector_oi(x,rDF,mdlvar,errvar,sx,sy,oi_option), axis=1)
+           totData = combineRadBins.apply(lambda x,: makeTotalVector_oi(x,rDF, mdlvar=mdlvar,errvar=errvar,sx=sx,sy=sy, minContrRads=minContrRads, minContrSites=minContrSites, oi_option=oi_option), axis=1)
         else:
             warn = 'No combination performed: not a valid combination method'
+
         # Assign column names to the combination DataFrame
         totData.columns = ['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']
+        Tcomb.data[['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']] = totData
 
-        # Fill Total with combination results
-        if method == 'oi':
-            Tcomb.data[['VELU', 'VELV', 'VELO', 'HEAD', 'UERR', 'VERR', 'DIRI', 'GDOP', 'NRAD']] = totData
-        else:
-            Tcomb.data[['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']] = totData
+        if useLandMask:
+            # Mask out vectors on land
+            Tcomb.mask_over_land(subset=True)
 
-        # Mask out vectors on land
-        Tcomb.mask_over_land(subset=True)
-
-        # Get the indexes of grid cells without total vectors
-        indexNoVec = Tcomb.data[Tcomb.data['VELU'].isna()].index
-        # Delete these row indexes from DataFrame
-        Tcomb.data.drop(indexNoVec, inplace=True)
-        Tcomb.data.reset_index(level=None, drop=False,
+        if dropPoints:
+            # Get the indexes of grid cells without total vectors
+            indexNoVec = Tcomb.data[Tcomb.data['VELU'].isna()].index
+            # Delete these row indexes from DataFrame
+            Tcomb.data.drop(indexNoVec, inplace=True)
+            Tcomb.data.reset_index(level=None, drop=False,
                                inplace=True)  # Set drop=True if the former indices are not necessary
 
         if Tcomb.data.empty:
@@ -779,6 +776,26 @@ class Total(fileParser):
             self.data = self.data.loc[waterIndex].reset_index()
         else:
             return waterIndex
+
+    def duplicate_test_check(self, test_str, recalculate=False):
+        if test_str in self.data.columns:
+            if recalculate:
+                logger.warning(f"Overwriting QC test {test_str} results.")
+                # Remove the previous results column from the dataframe
+                # and remove tableheader labels from protected attributes
+                # (otherwise there will be an error in writing the file to ruv)
+                self.data.drop(test_str, axis=1,inplace=True)
+                self._tables[1]["_TableHeader"][0].remove(test_str)
+                self._tables[1]["_TableHeader"][1].remove("(flag)")
+                # Remove the previous QCTest information in the header
+                if test_str in self.metadata['QCTest']:
+                    del self.metadata['QCTest'][test_str]
+                return False
+            else:
+                logger.warning(f"Cannot run QC test {test_str} more than once. Exiting test.")
+                return True
+        else:
+            return False
 
     def plot_Basemap(self, lon_min=None, lon_max=None, lat_min=None, lat_max=None, shade=False, show=True):
         """
@@ -1048,6 +1065,134 @@ class Total(fileParser):
             plt.show()
 
         return fig
+
+    def to_xarray(self, model="gridded", grid=None, enhance=False, user_attributes=None):
+        """
+        Helper function
+
+        Args:
+            model (str, optional):
+                Create a 'tabular' (time) or 'gridded' (time, range, bearing) xarray dataset. Defaults to 'tabular'.
+
+        """
+        # Make a copy so that the original total object is not altered by this function
+        tcopy = copy.deepcopy(self)
+
+        #if model == "tabular":
+            #ds = rcopy._to_xarray_tabular(enhance)
+        if model == "gridded":
+            ds = tcopy._to_xarray_gridded(grid=grid)
+        else:
+            raise ValueError("Please enter a valid data model type. Must be a string 'tabular' or 'gridded'")
+        return ds
+
+    def _to_xarray_gridded(self, grid=None):
+        """
+        Convert total file to an xarray dataset on a total grid.
+        This dataset has dimensions of time, depth, lon and lat..
+
+        Adapted from MATLAB code by Mark Otero
+        http://cordc.ucsd.edu/projects/mapping/documents/HFRNet_Radial_NetCDF.pdf
+
+        Args:
+            grid (str or GeoSeries, optional):
+                If str, it is the full path and file name to a text file containing grid locations with format
+                longitude1 latitude1
+                longitude2 latitude2   etc.
+                If GeoSeries, the unique latitudes and longitudes are used to create the xarray grid
+                The default is None, and in this case, the latitude and longitude values in the Total object
+                are used to create the xarray grid.
+
+        Returns:
+            xarray.Dataset: total file converted to an xarray dataset with dimensions of time, depth, latitude and longitude
+        """
+        logging.info("Converting total matrix to multidimensional dataset")
+
+        # Intitialize empty xarray dataset
+        ds = xr.Dataset()
+
+        # CF Standard: T, Z, Y, X
+        coords = ("time", "z", "lat", "lon")
+
+        # time = timestamp_from_lluv_filename(mat_file)
+        # time_index = pd.date_range(time.strftime('%Y-%m-%d %H:%M:%S'), periods=1)  # create pandas datetimeindex from time
+        # Evaluate timestamp as number of days since 1970-01-01T00:00:00Z
+        timeDelta = self.time - dt.datetime.strptime('1970-01-01T00:00:00Z', '%Y-%m-%dT%H:%M:%SZ')
+        ncTime = timeDelta.days + timeDelta.seconds / (60 * 60 * 24)
+
+        if isinstance(grid, str) and Path(grid).exists():
+            # load csv file containing the grid  (could be passed to function instead)
+            logging.debug('{} - Reading grid file'.format(grid))
+            grid_file = pd.read_csv(grid, header=None, names=['lon', 'lat'], sep='\s+')
+            logging.debug('{} - Grid file loaded'.format(grid))
+
+            # Create a 2D grid
+            # lon, lat are 1D from the Total object or the grid CSV file
+            # x,y represent grid in 2D
+            lon = np.unique(grid_file['lon'].values.astype(np.float32))
+            lat = np.unique(grid_file['lat'].values.astype(np.float32))
+            [x, y] = np.meshgrid(lon, lat)
+        elif isinstance(grid, gpd.GeoSeries):
+            # extract longitudes and latitude from grid GeoSeries and insert them into numpy arrays
+            lon_dim = np.unique(grid.x.to_numpy())
+            lat_dim = np.unique(grid.y.to_numpy())
+            # manage antimeridian crossing
+            lon_dim = np.concatenate((lon_dim[lon_dim >= 0], lon_dim[lon_dim < 0]))
+            # Create total grid from longitude and latitude
+            [x, y] = np.meshgrid(lon_dim, lat_dim)
+        else:
+            lon_min = min(self.data['LOND'])
+            lon_max = max(self.data['LOND'])
+            lat_min = min(self.data['LATD'])
+            lat_max = max(self.data['LATD'])
+            unique_longitudes = np.unique(self.data['LOND'])
+            if unique_longitudes.shape[0] > 1:
+                point1 = (unique_longitudes[0], unique_latitudes[0])
+                point2 = (unique_longitudes[1], unique_latitudes[0])
+                distance_geopy = distance.geodesic(point1, point2).km
+                grid_res = round(distance_geopy) * 1000
+            else:
+                grid_res = 6000
+            gridGS = createLonLatGridFromBB(lon_min, lon_max, lat_min, lat_max, grid_res)
+            # extract longitudes and latitude from grid GeoSeries and insert them into numpy arrays
+            lon_dim = np.unique(gridGS.x.to_numpy())
+            lat_dim = np.unique(gridGS.y.to_numpy())
+            # manage antimeridian crossing
+            lon_dim = np.concatenate((lon_dim[lon_dim >= 0], lon_dim[lon_dim < 0]))
+            # Create total grid from longitude and latitude
+            [x, y] = np.meshgrid(lon_dim, lat_dim)
+
+        # mapping to convert 1d data into 2d gridded form. data_dict must be a dictionary.
+        x_ind, y_ind = gridded_index(x, y, self.data['LOND'], self.data['LATD'])
+
+        # create dictionary containing variables from dataframe in the shape of total grid
+        d = {key: np.tile(np.nan, x.shape) for key in self.data.keys()}
+
+        # Add all variables to dictionary
+        for k, v in d.items():
+            v[y_ind.astype(int), x_ind.astype(int)] = self.data[k]
+            d[k] = v
+
+        # Add extra dimensions for time (T) and depth (Z) - CF Standard: T, Z, Y, X -> T=axis0, Z=axis1
+        d = {k: np.expand_dims(np.float32(v), axis=(0, 1)) for (k, v) in d.items()}
+
+        # Add coordinate variables to x_array dataset
+        ds.coords["time"] = pd.date_range(self.time, periods=1)
+        ds.coords["z"] = np.array([np.float32(0)])
+        ds.coords["lat"] = lat.round(6)
+        ds.coords["lon"] = lon.round(6)
+
+        # Add all variables to dataset
+        for k, v in d.items():
+            ds[k] = (coords, v)
+
+        # Check if calculated longitudes and latitudes align with given longitudes and latitudes
+        # plt.plot(ds.lon, ds.lat, 'bo', ds.LOND.squeeze(), ds.LATD.squeeze(), 'rx')
+
+        # Drop extraneous variables
+        ds = ds.drop_vars(["LOND", "LATD"])
+
+        return ds
 
     def to_xarray_multidimensional(self, lon_min=None, lon_max=None, lat_min=None, lat_max=None, grid_res=None):
         """
@@ -1811,7 +1956,7 @@ class Total(fileParser):
         self.metadata['QCTest'][
             testName] = 'Overall QC Flag - Test applies to each vector. Test checks if all QC tests are passed.'
 
-    def qc_qartod_gdop(self, maxGDOP=2):
+    def qc_qartod_gdop(self, max_GDOP=2, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -1823,18 +1968,26 @@ class Total(fileParser):
             maxGDOP: maximum allowed GDOP for normal operations
         """
         # Set the test name
-        testName = 'Q302'
+        test_str = 'Q302'
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
 
         # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
-        self.data.loc[:, testName] = 1
+        self.data.loc[:, test_str] = 1
 
         # set bad flag for velocities not passing the test
-        self.data.loc[(self.data['GDOP'] > maxGDOP), testName] = 4
+        self.data.loc[(self.data['GDOP'] > max_GDOP), test_str] = 4
 
-        self.metadata['QCTest'][testName] = 'qc_qartod_gdop - Test applies to each vector. ' \
-                                            + 'Threshold=[' + f'GDOP threshold={maxGDOP}]'
+        self.metadata['QCTest'][test_str] = 'qc_qartod_gdop - Test applies to each vector. ' \
+                                            + 'Threshold=[' + f'GDOP threshold={max_GDOP}]'
+        self.metadata['QCTest'][
+            test_str] = f"qc_qartod_gdop ({test_str}) - Test applies to each row. Thresholds=" \
+                        + "[ " + f"max={str(max_GDOP)} (cm/s) " \
+                        + f"]: See results in column {test_str} below"
 
-    def qc_qartod_u_uncertainty(self, uerr=0.6):
+    def qc_qartod_u_uncertainty(self, max_Uerr=0.6, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -1849,18 +2002,24 @@ class Total(fileParser):
             max_Uerr: maximum allowed U component uncertainty for normal operations
         """
         # Set the test name
-        testName = 'Q306'
+        test_str = 'Q306'
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
 
         # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
-        self.data.loc[:, testName] = 1
+        self.data.loc[:, test_str] = 1
 
         # set bad flag for velocities not passing the test
-        self.data.loc[(self.data['UERR'] > maxGDOP), testName] = 4
+        self.data.loc[(self.data['UQAL'] > max_Uerr), test_str] = 4
 
-        self.metadata['QCTest'][testName] = 'qc_qartod_u_uncertainty - Test applies to each vector. ' \
-                                            + 'Threshold=[' + f'Threshold={max_Uerr}]'
+        self.metadata['QCTest'][
+            test_str] = f"qc_qartod_u_uncertainty ({test_str}) - Test applies to each row. Thresholds=" \
+                        + "[ " + f"max={str(max_Uerr)} (cm/s) " \
+                        + f"]: See results in column {test_str} below"
 
-    def qc_qartod_v_uncertainty(self, uerr=0.6):
+    def qc_qartod_v_uncertainty(self, max_Verr=0.6, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -1875,19 +2034,27 @@ class Total(fileParser):
             max_Verr: maximum allowed U component uncertainty for normal operations
         """
         # Set the test name
-        testName = 'Q307'
+        test_str = 'Q307'
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
 
         # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
-        self.data.loc[:, testName] = 1
+        self.data.loc[:, test_str] = 1
 
         # set bad flag for velocities not passing the test
-        self.data.loc[(self.data['VERR'] > max_Verr), testName] = 4
+        self.data.loc[(self.data['VQAL'] > max_Verr), test_str] = 4
 
-        self.metadata['QCTest'][testName] = 'qc_qartod_v_uncertainty - Test applies to each vector. ' \
-                                            + 'Threshold=[' + f'Threshold={max_Verr}]'
+        self.metadata['QCTest'][test_str] = f"qc_qartod_v_uncertainty ({test_str}) - Test applies to each vector. " \
+                                            + "Threshold=[" + f"Threshold={max_Verr}]"
+        self.metadata['QCTest'][
+            test_str] = f"qc_qartod_v_uncertainty ({test_str}) - Test applies to each row. Thresholds=" \
+                        + "[ " + f"max={str(max_Verr)} (cm/s) " \
+                        + f"]: See results in column {test_str} below"
 
 
-    def qc_qartod_maximum_velocity(self, max_speed=250, high_speed=150):
+    def qc_qartod_maximum_velocity(self, max_speed=250, high_speed=150, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -1907,6 +2074,10 @@ class Total(fileParser):
         """
         test_str = "Q303"
 
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
         self.data["VELO"] = self.data["VELO"].astype(float)  # make sure VELO is a float
 
         # Add new column to dataframe for test, and set every row as passing, 1, flag
@@ -1925,9 +2096,8 @@ class Total(fileParser):
                         + "[ " + f"high_vel={str(high_speed)} (cm/s) " \
                         + f"max_vel={str(max_speed)} (cm/s) " \
                         + f"]: See results in column {test_str} below"
-        self.append_to_tableheader(test_str, "(flag)")
 
-    def qc_qartod_valid_location(self, use_mask=True, res='high'):
+    def qc_qartod_valid_location(self, use_mask=True, res='high', recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -1945,7 +2115,15 @@ class Total(fileParser):
        """
 
         test_str = "Q305"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        applied_test_str = ''
         success = 0
+
+        self.data[test_str] = 1  # add new column of passing values
 
         if use_mask:
             try:
@@ -1964,10 +2142,9 @@ class Total(fileParser):
             logger.warning(
                 f"qc_qartod_valid_location did not run, no {flag_column} column, land mask and angseg either not used or not successfully applied")
 
-        self.append_to_tableheader(test_str, "(flag)")
 
 
-    def qc_qartod_primary_flag(self, include=None):
+    def qc_qartod_primary_flag(self, include=None, recalculate=False):
         """
         A primary flag is a single flag set to the worst case of all QC flags within the data record.
 
@@ -1977,6 +2154,10 @@ class Total(fileParser):
                 Defaults to None, which includes all tests.
         """
         test_str = "PRIM"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
 
         # Set summary flag column all equal to 1
         self.data[test_str] = 1
@@ -2002,7 +2183,6 @@ class Total(fileParser):
         included_test_strs = ", ".join(included_tests)
         self.metadata['QCTest'][
             test_str] = f'qc_qartod_primary_flag ({test_str}) - Primary Flag - Highest flag value of {included_test_strs}' + '("not_evaluated" flag results ignored)'
-        self.append_to_tableheader(test_str, "(flag)")
         # %QCFlagDefinitions: 1=pass 2=not_evaluated 3=suspect 4=fail 9=missing_data
 
     def file_type(self):
