@@ -97,6 +97,25 @@ def timestamp_from_lluv_filename(filename):
     timestamp = dt.datetime.strptime(mat_time, "%Y_%m_%d_%H%M")
     return timestamp
 
+def timestamp_to_lluv_filename(times, pre, post, ext):
+    """
+    Convert a list of times into filenames including the string timestamp
+
+    Args:
+        times (str): datetime representations of the time
+        pre (str): prefix
+        post (str): postfix
+        ext (str): file extension
+
+    Returns:
+        filenames: filenames including the string timestamp in the format yyyy_mm_dd_HHMM
+    """
+
+    time_strings = times.strftime("%Y_%m_%d_%H%M")
+    filenames = [f"{pre}{ts}{post}.{ext}" for ts in time_strings]
+
+    return filenames
+
 
 def addBoundingBoxMetadata(obj, lon_min, lon_max, lat_min, lat_max, grid_res=None):
     """
