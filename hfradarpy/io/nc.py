@@ -6,8 +6,7 @@ import xarray as xr
 from collections import OrderedDict
 import os
 
-datetime_format = "%Y%m%dT%H%M%SZ"
-
+datetime_format = "%Y-%m-%dT%H:%M:%SZ"
 
 def make_encoding(ds, time_start="seconds since 1970-01-01 00:00:00", comp_level=4, chunksize=10000, fillvalue=-999.00):
     encoding = {}
@@ -33,7 +32,7 @@ def make_encoding(ds, time_start="seconds since 1970-01-01 00:00:00", comp_level
             encoding[k]["chunksizes"] = shape
 
     # add the encoding for time so xarray exports the proper time
-    encoding["time"] = dict(units=time_start, calendar="gregorian", zlib=False, _FillValue=None, dtype=np.double)
+    encoding["time"] = dict(units=time_start, calendar="standard", zlib=False, _FillValue=None, dtype=np.double)
     # encoding['site_code_flags'] = dict(zlib=True, _FillValue=int(0))
 
     return encoding
@@ -51,7 +50,7 @@ def required_global_attributes(required_attributes, time_start, time_end):
     Returns:
         _type_: _description_
     """
-    datetime_format = "%Y%m%dT%H%M%SZ"
+    datetime_format = "%Y-%m-%dT%H:%M:%SZ"
     created = pd.Timestamp(dt.datetime.utcnow()).strftime(datetime_format)  # creation time Timestamp
 
     time_start = pd.Timestamp(str(time_start)).strftime(datetime_format)

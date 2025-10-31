@@ -1178,7 +1178,7 @@ class Total(fileParser):
 
         # Add coordinate variables to x_array dataset
         ds.coords["time"] = pd.date_range(self.time, periods=1)
-        ds.coords["z"] = np.array([np.float32(0)])
+        ds.coords["depth"] = np.array([np.float32(0)])
         ds.coords["lat"] = lat.round(6)
         ds.coords["lon"] = lon.round(6)
 
