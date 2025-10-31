@@ -249,6 +249,12 @@ class fileParser(object):
                                     " Floor": "_Floor",
                                     " Error": "_Error",
                                     " NCW": "_NCW",
+                                    "Trg m": "Trg_m",
+                                    "TRV mps": "TRV_mps",
+                                    "A13_v,deg": "A13_v A13_deg",
+                                    "A23_v,deg": "A23_v A23_deg",
+                                    "A3dBm,deg": "A3dBm A3dBm_deg",
+                                    "Hits" : "Hits Flag"
                                 }
                                 rep = dict((re.escape(k), v) for k, v in rep.items())
                                 pattern = re.compile("|".join(rep.keys()))
