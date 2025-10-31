@@ -2728,7 +2728,7 @@ class Radial(fileParser):
 
         # self.data[test_str] = data
         self.metadata['QCTest'][
-            test_str] = f"qc_qartod_radial_stuck_value_version_2 ({test_str}) - Test applies to each row. Thresholds=" \
+            test_str] = f"qc_qartod_stuck_value_version_2 ({test_str}) - Test applies to each row. Thresholds=" \
                         + "[ " + f"stuck_value_resolution={str(resolution)} (cm/s) " \
                         + f"stuck_value_number_of_timesteps={str(N)}" \
                         + f"]: See results in column {test_str} below"
@@ -2828,7 +2828,7 @@ class Radial(fileParser):
 
         # self.data[test_str] = data
         self.metadata['QCTest'][
-            test_str] = f"qc_qartod_radial_stuck_value ({test_str}) - Test applies to each row. Thresholds=" \
+            test_str] = f"qc_qartod_stuck_value ({test_str}) - Test applies to each row. Thresholds=" \
                         + "[ " + f"stuck_value_resolution={str(resolution)} (cm/s) " \
                         + f"stuck_value_number_of_timesteps={str(N)}" \
                         + f"]: See results in column {test_str} below"
