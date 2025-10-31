@@ -1112,7 +1112,7 @@ class Total(fileParser):
         ds = xr.Dataset()
 
         # CF Standard: T, Z, Y, X
-        coords = ("time", "z", "lat", "lon")
+        coords = ("time", "depth", "lat", "lon")
 
         # time = timestamp_from_lluv_filename(mat_file)
         # time_index = pd.date_range(time.strftime('%Y-%m-%d %H:%M:%S'), periods=1)  # create pandas datetimeindex from time
