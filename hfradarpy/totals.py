@@ -1129,9 +1129,11 @@ class Total(fileParser):
             # Create a 2D grid
             # lon, lat are 1D from the Total object or the grid CSV file
             # x,y represent grid in 2D
-            lon = np.unique(grid_file['lon'].values.astype(np.float32))
-            lat = np.unique(grid_file['lat'].values.astype(np.float32))
-            [x, y] = np.meshgrid(lon, lat)
+            lon_dim = np.unique(grid_file['lon'].values.astype(np.float32))
+            lat_dim = np.unique(grid_file['lat'].values.astype(np.float32))
+            # manage antimeridian crossing
+            lon_dim = np.concatenate((lon_dim[lon_dim >= 0], lon_dim[lon_dim < 0]))
+            [x, y] = np.meshgrid(lon_dim, lat_dim)
         elif isinstance(grid, gpd.GeoSeries):
             # extract longitudes and latitude from grid GeoSeries and insert them into numpy arrays
             lon_dim = np.unique(grid.x.to_numpy())
@@ -1179,8 +1181,8 @@ class Total(fileParser):
         # Add coordinate variables to x_array dataset
         ds.coords["time"] = pd.date_range(self.time, periods=1)
         ds.coords["depth"] = np.array([np.float32(0)])
-        ds.coords["lat"] = lat.round(6)
-        ds.coords["lon"] = lon.round(6)
+        ds.coords["lat"] = lat_dim.round(6)
+        ds.coords["lon"] = lon_dim.round(6)
 
         # Add all variables to dataset
         for k, v in d.items():
