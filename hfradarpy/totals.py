@@ -36,6 +36,7 @@ except Exception as err:
     pass
 from scipy.spatial import ConvexHull
 import geopy.distance
+from joblib import Parallel, delayed
 
 logger = logging.getLogger(__name__)
 
@@ -241,9 +242,14 @@ def totalOI(VelHeadLonLat, gridloc, mdlvar,errvar,sx,sy,oi_option='exponential')
     cdd = w_ * (np.cos(ang1) * np.cos(ang2) + np.sin(ang1) * np.sin(ang2))
 
     # Compute cmdicdd and final values
-    cmdicdd = np.dot(P_, np.dot(cmd.T, np.linalg.inv(cdd + R)))
+    #cmdicdd = np.dot(P_, np.dot(cmd.T, np.linalg.inv(cdd + R))) #slower method
+    A = cdd + R
+    X = np.linalg.solve(A, cmd)
+    cmdicdd = P_ @ X.T
     a = np.dot(cmdicdd, VelHeadLonLat['VELO'])
     xi = np.linalg.inv(P_) @ (P_ - np.dot(np.dot(cmdicdd, cmd), P_))
+
+
 
     # Extract u and v from the vector a
     u = a[0]
@@ -398,14 +404,28 @@ def makeTotalVector_oi(rBins,rDF, mdlvar=1,errvar=1,sx=1,sy=1,minContrRads=3,min
     # check if there are at least two contributing radial sites
     if contrRad.size >= minContrSites:
         # loop over contributing radial indices for collecting velocities and angles
-        contributions = pd.DataFrame()
+        vel_list = []
+        head_list = []
+        lon_list = []
+        lat_list = []
+
         for idx in contrRad.index:
-            contrVel = rDF.loc[idx]['Radial'].data.VELO[contrRad[idx]]  # pandas Series
-            contrHead = rDF.loc[idx]['Radial'].data.HEAD[contrRad[idx]]  # pandas Series
-            contrLon = rDF.loc[idx]['Radial'].data.LOND[contrRad[idx]]
-            contrLat = rDF.loc[idx]['Radial'].data.LATD[contrRad[idx]]
-            contributions = pd.concat(
-                [contributions, pd.concat([contrVel, contrHead, contrLon, contrLat], axis=1)])  # pandas DataFrame
+            rad = rDF.loc[idx]['Radial'].data
+            sel = contrRad[idx]
+
+            vel_list.append(rad.VELO[sel])
+            head_list.append(rad.HEAD[sel])
+            lon_list.append(rad.LOND[sel])
+            lat_list.append(rad.LATD[sel])
+
+        if vel_list:
+            contributions = pd.DataFrame({
+                "VELO": np.concatenate(vel_list),
+                "HEAD": np.concatenate(head_list),
+                "LOND": np.concatenate(lon_list),
+                "LATD": np.concatenate(lat_list),
+            })
+
 
         # check if there are at least three contributing radial vectors
         if len(contributions.index) >= minContrRads:
@@ -421,14 +441,14 @@ def makeTotalVector_oi(rBins,rDF, mdlvar=1,errvar=1,sx=1,sy=1,minContrRads=3,min
                 totalData.loc[4] = math.sqrt(xi[0, 0])  # Uerr, normalized uncertainty of u (good: 0 poor: 1)
                 totalData.loc[5] = math.sqrt(xi[1, 1])  # Verr, normalized uncertainty of v (good: 0 poor: 1)
                 totalData.loc[6] = xi[0, 1]  # directional info of u and v (UV covariance)
-                totalData.loc[7] = math.sqrt(xi[0,0] ** 2 + xi[1,1] ** 2);  # OI Total Errors
+                totalData.loc[7] = math.sqrt(xi[0,0] ** 2 + xi[1,1] ** 2)  # OI Total Errors
                 totalData.loc[8] = len(contributions.index)  # NRAD
 
     return totalData
 
 
 
-def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True ):
+def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True, runParallel=True):
     """
     This function generataes total vectors from radial measurements using the
     weighted Least Square method for combination.
@@ -548,13 +568,30 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
             combineRadBins['LOND'] = gridpoints['LOND']
             combineRadBins['LATD'] = gridpoints['LATD']
 
-
         if method == 'wls':
-           totData = combineRadBins.apply(lambda x: makeTotalVector(x, rDF), axis=1)
+            totData = combineRadBins.apply(lambda x: makeTotalVector(x, rDF), axis=1)
         elif method == 'uwls':
-           totData = combineRadBins.apply(lambda x: makeTotalVector_uwls(x, rDF, minContrRads=minContrRads, minContrSites=minContrSites), axis=1)
+            totData = combineRadBins.apply(lambda x: makeTotalVector_uwls(x, rDF, minContrRads=minContrRads, minContrSites=minContrSites), axis=1)
         elif method == 'oi':
-           totData = combineRadBins.apply(lambda x,: makeTotalVector_oi(x,rDF, mdlvar=mdlvar,errvar=errvar,sx=sx,sy=sy, minContrRads=minContrRads, minContrSites=minContrSites, oi_option=oi_option), axis=1)
+
+            if runParallel:
+                totData = Parallel(n_jobs=-1)(
+                    delayed(makeTotalVector_oi)(
+                    row, rDF,
+                    mdlvar=mdlvar,
+                    errvar=errvar,
+                    sx=sx,
+                    sy=sy,
+                    minContrRads=minContrRads,
+                    minContrSites=minContrSites,
+                    oi_option=oi_option
+                )
+                for _, row in combineRadBins.iterrows()
+                )
+                totData = pd.DataFrame(totData)
+            else:
+                totData = combineRadBins.apply(lambda x: makeTotalVector_oi(x,rDF,mdlvar=mdlvar,errvar=errvar,sx=sx,sy=sy,minContrRads=minContrRads,minContrSites=minContrSites,oi_option=oi_option),axis=1)
+
         else:
             warn = 'No combination performed: not a valid combination method'
 
