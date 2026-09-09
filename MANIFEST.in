@@ -1,3 +1,6 @@
 include versioneer.py
 include hfradarpy/_version.py
+include README.rst
+include HISTORY.rst
+include LICENSE
 recursive-include hfradarpy/.hfradarpy *
