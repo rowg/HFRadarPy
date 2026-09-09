@@ -6,6 +6,9 @@ from shapely.geometry import Point
 from geopandas import GeoSeries
 import pandas as pd
 import datetime as dt
+from polycircles import polycircles
+from shapely.geometry.polygon import Polygon
+import shapely
 
 import logging
 
@@ -507,3 +510,21 @@ def gridded_index(X, Y, x, y, flag=np.nan):
     # Roll index calculation into other function so we can use numba for speedups
     x_ind, y_ind = calc_index(x_ind, y_ind, X, Y, x, y)
     return x_ind, y_ind
+
+def scircle1(lat, lon, radius, num=99):
+    """Number of vertices inside circle"""
+    polycircle = polycircles.Polycircle(latitude=lat, longitude=lon,
+                                        radius=radius*1e3,
+                                        number_of_vertices=num)
+    verticles = np.array(polycircle.vertices)
+    return verticles[:, 0], verticles[:, 1]
+
+def inpolygon(xq, yq, xv, yv):
+    """number of points inside polygon"""
+    #rst = []
+    polygon = Polygon(list(zip(xv, yv)))
+    if not polygon.is_valid:
+        polygon = polygon.buffer(0)
+
+    pts = shapely.points(xq, yq)
+    return polygon.touches(pts) | polygon.contains(pts)

@@ -14,8 +14,9 @@ import io
 import os
 from pathlib import Path
 from hfradarpy.common import fileParser, addBoundingBoxMetadata
-from hfradarpy.calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, createLonLatGridFromTopLeftPointWera, lonlat2km, gridded_index, calc_index
+from hfradarpy.calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, createLonLatGridFromTopLeftPointWera, lonlat2km, gridded_index, calc_index, scircle1, inpolygon
 from hfradarpy.io.nc import make_encoding
+from hfradarpy.hfrnet import *
 from collections import OrderedDict
 import json
 import fnmatch
@@ -153,6 +154,56 @@ def totalLeastSquare(VelHeadStd):
         C = np.nan
         Cgdop = np.nan
         return u, v, C, Cgdop
+
+def totalUnWeightedLeastSquare(VelHead):
+    """
+    This function calculates the u/v components of a total vector from 2 to n
+    radial vector components using unweighted Least Square method and code
+    from uwlsTotal.py in hfrnet-rtv
+
+    INPUT:
+        VelHead: DataFrame containing contributing radial velocities and bearings
+
+    OUTPUT:
+        u: U component of the total vector
+        v: V component of the total vector
+        C: covariance matrix
+        Cgdop: covariance matrix assuming uniform unit errors for all radials (i.e. all radial std=1)
+    """
+    # Convert angles from true convention to math convention
+    VelHead['HEAD'] = true2mathAngle(VelHead['HEAD'].to_numpy())
+    rHeading = VelHead['HEAD']
+
+    # Form the design matrix (i.e. the angle matrix)
+    X = np.zeros((np.size(rHeading), 2))
+    X[:, 0] = np.cos(np.deg2rad(rHeading))
+    X[:, 1] = np.sin(np.deg2rad(rHeading))
+
+    X_transpose_X = np.matmul(np.transpose(X), X)
+    det_transpose = np.linalg.det(X_transpose_X)
+
+    # Evaluate the covariance matrix C (variance(U) = C(1,1) and variance(V) = C(2,2))
+    if abs(det_transpose) > 1e-5:
+
+        C = np.linalg.inv(X_transpose_X)
+        # Calculate the u and v for the total vector
+        # Form the velocity vector
+        rSpeed = (VelHead['VELO'].to_numpy())
+        a = np.linalg.multi_dot([C, np.transpose(X), rSpeed])
+        u = a[0]
+        v = a[1]
+        # C was already calculated with all radial std=1 so is same as Cgdop
+        Cgdop = C
+        return u, v, C, Cgdop
+
+
+    else:
+        u = np.nan
+        v = np.nan
+        C = np.nan
+        Cgdop = np.nan
+        return u, v, C, Cgdop
+
 
 
 def totalOI(VelHeadLonLat, gridloc, mdlvar,errvar,sx,sy,oi_option='exponential'):
@@ -350,15 +401,13 @@ def makeTotalVector_uwls(rBins, rDF, minContrRads=3, minContrSites=2):
         for idx in contrRad.index:
             contrVel = rDF.loc[idx]['Radial'].data.VELO[contrRad[idx]]  # pandas Series
             contrHead = rDF.loc[idx]['Radial'].data.HEAD[contrRad[idx]]  # pandas Series
-            contrStd = contrHead - contrHead + 1   # set all standard deviations to 1 for unweighted least squares method
-            contrStd = contrStd.rename("STD")  # pandas Series
             contributions = pd.concat(
-                [contributions, pd.concat([contrVel, contrHead, contrStd], axis=1)])  # pandas DataFrame
+                [contributions, pd.concat([contrVel, contrHead], axis=1)])  # pandas DataFrame
 
         # check if there are at least three contributing radial vectors
         if len(contributions.index) >= minContrRads:
             # combine radial contributions to get total vector for the current grid cell
-            u, v, C, Cgdop = totalLeastSquare(contributions)
+            u, v, C, Cgdop = totalUnWeightedLeastSquare(contributions)
 
             if not math.isnan(u):
                 # populate Total Series
@@ -369,7 +418,9 @@ def makeTotalVector_uwls(rBins, rDF, minContrRads=3, minContrSites=2):
                 totalData.loc[4] = math.sqrt(C[0, 0])  # UQAL
                 totalData.loc[5] = math.sqrt(C[1, 1])  # VQAL
                 totalData.loc[6] = C[0, 1]  # CQAL
-                totalData.loc[7] = math.sqrt(np.abs(Cgdop.trace()))  # GDOP
+                totalData.loc[7] = math.sqrt(C.trace())  # GDOP
+                #the following formula was used in hfrprogs
+                #totalData.loc[7] = math.sqrt(0.5 * (C.trace() + math.sqrt((C.trace() ** 2) - 4 * np.linalg.det(C))))
                 totalData.loc[8] = len(contributions.index)  # NRAD
 
     return totalData
@@ -438,14 +489,13 @@ def makeTotalVector_oi(rBins,rDF, mdlvar=1,errvar=1,sx=1,sy=1,minContrRads=3,min
                 totalData.loc[1] = v  # VELV
                 totalData.loc[2] = np.sqrt(u ** 2 + v ** 2)  # VELO
                 totalData.loc[3] = (360 + np.arctan2(u, v) * 180 / np.pi) % 360  # HEAD
-                totalData.loc[4] = math.sqrt(xi[0, 0])  # Uerr, normalized uncertainty of u (good: 0 poor: 1)
-                totalData.loc[5] = math.sqrt(xi[1, 1])  # Verr, normalized uncertainty of v (good: 0 poor: 1)
+                totalData.loc[4] = xi[0, 0]  # Uerr, normalized uncertainty of u (good: 0 poor: 1)
+                totalData.loc[5] = xi[1, 1]  # Verr, normalized uncertainty of v (good: 0 poor: 1)
                 totalData.loc[6] = xi[0, 1]  # directional info of u and v (UV covariance)
                 totalData.loc[7] = math.sqrt(xi[0,0] ** 2 + xi[1,1] ** 2)  # OI Total Errors
                 totalData.loc[8] = len(contributions.index)  # NRAD
 
     return totalData
-
 
 
 def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True, runParallel=True):
@@ -619,6 +669,194 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
 
     return Tcomb, warn
 
+def convert_to_RadialInfoObj(r):
+    """
+    Input:
+    hfradarpy Radial data structure
+
+    Output:
+    HFRNet RadialInfoObj
+    """
+
+    currRadial = RadialInfo()
+    currRadial.time = r.time
+    currRadial.site = r.metadata['Site']
+    currRadial.network = ""
+    currRadial.patterntype = r.metadata['PatternType']
+    currRadial.manufacturer = r.metadata['Manufacturer']
+    currRadial.file = r.file_name
+    currRadial.dir = r.file_path
+    currRadial.sitelatitude = np.float64(r.metadata['Origin'].split()[0])
+    currRadial.sitelongitude = np.float64(r.metadata['Origin'].split()[1])
+    currRadial.maxrange = r.data['RNGE'].max()
+    currRadial.isNew = True
+    currRadial.longitude = r.data['LOND']
+    currRadial.latitude = r.data['LATD']
+    currRadial.speed = r.data['VELO']
+    currRadial.heading = r.data['BEAR']
+
+    return currRadial
+
+#def combineRadials_hfrnet(rDF, compTotInput, sRad, gRes, tStp, minContrSites=2, minContrRads=3, tempthreshold=0.0208, useLandMask=True, dropPoints=True):
+def combineRadials_hfrnet(rDF, compTotInput, sRad, gRes, tStp, minContrSites=2, minContrRads=3, tempthreshold=None, method='uwls', mdlvar=1, errvar=1,sx=1, sy=1, oi_weighting='exponential', useLandMask=True, dropPoints=True):
+    """
+    This function generataes total vectors from radial measurements using the
+    HFRNet code base.
+
+    INPUT:
+        rDF: DataFrame containing input Radials; indices must be the site codes.
+        compTotInput: HFRNet variable containing grid information
+        sRad: search radius for combination in meters.
+        gRes: grid resolution in meters
+        tStp: timestamp in datetime format (YYYY-MM-DD hh:mm:ss)
+        minContrSites: minimum number of contributing radial sites (default to 2)
+        minContrRads: minimum number of contributing radial vectors (default to 3)
+        tempthreshold: currently not used, default was to use window of half hour, 0.0208 day
+        method:'uwls' or 'oi'
+        mdlvar: a priori model covariance of the surface currents
+        errvar: observational error variance, which can be constant
+        sx: decorrelation length scale
+        sy: decorrelation length scale
+        oi_weighting: 'exponential' or 'gaussian'
+        useLandMask: whether to use LandMask (default to True)
+        dropPoints: whether to drop points with NaN velocities (default to True)
+
+    OUTPUT:
+        Tcomb: Total object generated by the combination
+        warn: string containing warnings related to the success of the combination
+    """
+    # Initialize empty warning string
+    warn = ''
+
+    gridGS = gpd.GeoSeries(
+        [Point(xy) for xy in zip(compTotInput.grid.ocean_xy[0], compTotInput.grid.ocean_xy[1])],
+        crs="EPSG:4326"
+    )
+
+    # Create empty total with grid
+    Tcomb = Total(grid=gridGS)
+
+    # use the data from hfradarpy rDF to create the radials variable expected by HFRNet
+    rtvInfoObj = RtvInfo()
+    rtvInfoObj.grid_search_radius = np.float64(sRad/1000)
+    rtvInfoObj.max_age = np.float64(99999999)
+    rtvInfoObj.max_rad_speed = np.float64(999)
+    rtvInfoObj.max_rtv_speed = np.float64(999)
+    rtvInfoObj.min_rad_sites = np.float64(minContrSites)
+    rtvInfoObj.min_radials = np.float64(minContrRads)
+    rtvInfoObj.uwls_max_hdop = np.float64(999)
+    rtvInfoObj.uwls_max_hdop_ascii = np.float64(999)
+    rtvInfoObj.uwls_max_hdop_nc = np.float64(999)
+    rtvInfoObj.oi_mdlvar = np.float64(mdlvar)
+    rtvInfoObj.oi_errvar = np.float64(errvar)
+    rtvInfoObj.oi_sx = np.float64(sx)
+    rtvInfoObj.oi_sy = np.float64(sy)
+    rtvInfoObj.oi_weighting = oi_weighting
+    rtvInfoObj.method = method
+    rtvInfoObj.new_state = None  # not really using this feature, computing for all grid points instead of only ones affected by the new radials
+    rtvInfoObj.current_state = None
+
+    nSites = len(rDF)
+    radials = []
+    for radindx in range(nSites):
+        radials.append(convert_to_RadialInfoObj(rDF.iloc[radindx, 0]))
+
+    # Check if there are enough contributing radial sites
+    if rDF.size >= minContrSites:
+        # Fill site_source DataFrame with contributing radials information
+        siteNum = 0  # initialization of site number
+        for Rindex, Rrow in rDF.iterrows():
+            siteNum = siteNum + 1
+            rad = Rrow['Radial']
+            thisRadial = pd.DataFrame(index=[Rindex],
+                                      columns=['#', 'Name', 'Lat', 'Lon', 'Coverage(s)', 'RngStep(km)', 'Pattern',
+                                               'AntBearing(NCW)'])
+            thisRadial['#'] = siteNum
+            thisRadial['Name'] = Rindex
+            if rad.is_wera:
+                if 'Longitude(dd)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lon'] = float(rad.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+                    if rad.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                        thisRadial['Lon'] = -thisRadial['Lon']
+                elif 'Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lon'] = dms2dd(list(
+                        map(int, rad.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+                    if rad.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                        thisRadial['Lon'] = -thisRadial['Lon']
+                if 'Latitude(dd)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lat'] = float(rad.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+                    if rad.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                        thisRadial['Lat'] = -thisRadial['Lat']
+                elif 'Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lat'] = dms2dd(list(
+                        map(int, rad.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+                    if rad.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                        thisRadial['Lat'] = -thisRadial['Lat']
+                thisRadial['Coverage(s)'] = float(rad.metadata['ChirpRate'].replace('S', '')) * int(
+                    rad.metadata['Samples'])
+                thisRadial['RngStep(km)'] = float(rad.metadata['Range'].split()[0])
+                thisRadial['Pattern'] = 'Internal'
+                thisRadial['AntBearing(NCW)'] = float(rad.metadata['TrueNorth'].split()[0])
+            else:
+                thisRadial['Lat'] = float(rad.metadata['Origin'].split()[0])
+                thisRadial['Lon'] = float(rad.metadata['Origin'].split()[1])
+                thisRadial['Coverage(s)'] = float(rad.metadata['TimeCoverage'].split()[0])
+                if 'RangeResolutionKMeters' in rad.metadata:
+                    thisRadial['RngStep(km)'] = float(rad.metadata['RangeResolutionKMeters'].split()[0])
+                elif 'RangeResolutionMeters' in rad.metadata:
+                    thisRadial['RngStep(km)'] = float(rad.metadata['RangeResolutionKMeters'].split()[0]) * 0.001
+                thisRadial['Pattern'] = rad.metadata['PatternType'].split()[0]
+                thisRadial['AntBearing(NCW)'] = float(rad.metadata['AntennaBearing'].split()[0])
+            Tcomb.site_source = pd.concat([Tcomb.site_source, thisRadial])
+
+        # Insert timestamp
+        Tcomb.time = tStp
+
+        # Fill Total with some metadata
+        Tcomb.metadata['TimeZone'] = rad.metadata[
+            'TimeZone']  # trust all radials have the same, pick from the last radial
+        Tcomb.metadata['AveragingRadius'] = str(sRad / 1000) + ' km'
+        Tcomb.metadata['GridAxisOrientation'] = '0.0 DegNCW'
+        Tcomb.metadata['GridSpacing'] = str(gRes / 1000) + ' km'
+        if method == 'uwls':
+            U_totals = rtvComputeTotals(compTotInput, radials, rtvInfoObj)
+        elif method == 'oi':
+            U_totals = rtvComputeTotals(compTotInput, radials, rtvInfoObj)
+        else:
+            warn = 'No combination performed: invalid method'
+            return Tcomb, warn
+
+        # Put U_totals information into the Tcomb variable used by hfraadarpy
+        Tcomb.data['VELU'] = U_totals.u_xvel
+        Tcomb.data['VELV'] = U_totals.v_yvel
+        Tcomb.data['VELO'] = np.sqrt(U_totals.u_xvel ** 2 + U_totals.v_yvel ** 2)
+        Tcomb.data['HEAD'] = (360 + np.arctan2(U_totals.u_xvel, U_totals.v_yvel) * 180 / np.pi) % 360
+        Tcomb.data['UQAL'] = U_totals.dopx
+        Tcomb.data['VQAL'] = U_totals.dopy
+        Tcomb.data['CQAL'] = (U_totals.hdop ** 2) / 2 # backing this out from HDOP so may not have original sign and assumes C[1,0] and C[0,1] are same
+        Tcomb.data['GDOP'] = U_totals.hdop
+        Tcomb.data['NRAD'] = U_totals.nRads
+
+        if useLandMask:
+            # Mask out vectors on land
+            Tcomb.mask_over_land(subset=True)
+
+        if dropPoints:
+            # Get the indexes of grid cells without total vectors
+            indexNoVec = Tcomb.data[Tcomb.data['VELU'].isna()].index
+            # Delete these row indexes from DataFrame
+            Tcomb.data.drop(indexNoVec, inplace=True)
+            Tcomb.data.reset_index(level=None, drop=False,
+                               inplace=True)  # Set drop=True if the former indices are not necessary
+
+        if Tcomb.data.empty:
+            warn = 'No combination performed: no overlap in radial coverages'
+
+    else:
+        warn = 'No combination performed: not enough contributing radial sites'
+
+    return Tcomb, warn
+
 
 class Total(fileParser):
     """
@@ -699,8 +937,8 @@ class Total(fileParser):
         # if mask_over_land:
         #     self.mask_over_land()
 
-        if not grid.empty:
-            self.initialize_grid(grid)
+            if not grid.empty:
+                self.initialize_grid(grid)
 
     def empty_total(self):
         """
