@@ -12,6 +12,8 @@ dependencies:
   - bottleneck
   - dask
   - geopandas
+  - shapely
+  - polycircles
   - cartopy
   - matplotlib
   - cmocean
