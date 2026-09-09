@@ -25,7 +25,6 @@ requirements = [
     "basemap",
     "geopy",
     "oceans",
-    "pytest",
     ]
 
 test_requirements = [
