@@ -3,6 +3,8 @@ netcdf4
 pyproj
 joblib
 geopandas
+shapely
+polycircles
 cartopy
 matplotlib
 oceans

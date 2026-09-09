@@ -79,146 +79,6 @@ def velocityMedianInDistLimits(cell, radData, distLim, g):
 
     return median
 
-
-###### COMMENT FROM LORENZO: ######
-######I WOULD REMOVE THIS FUNCTION FROM radials.py FILE AND PUT IT IN A HIGHER LEVEL SCRIPT - ANYWAY, IT SEEMS TO BE UNUSED IN THE TOOLBOX ######
-def qc_radial_file(radial_file, qc_values=None, export=None, save_path=None, clean=False, clean_path=None):
-    """
-    Main function to parse and qc radial files.
-
-    Setting clean to True will create two separate quality controlled radial files. Must set clean_path.
-    The first radial file with containing flag metadata will be saved to save_path. This file contains data along with flags.
-    The second radial file with data that failed qc removed will be saved to clean_path. This file does not contain any flags.
-
-
-    Args:
-        radial_file (str or Path):
-            Path to radial file or a Radial object
-        qc_values (dict, optional):
-            Dictionary containing thresholds for each QC test. Defaults to None.
-        export (str, optional):
-            None or 'radial' or 'netcdf-tabular' or 'netcdf-multidimensional'. Defaults to None.
-        save_path (str or Path, optional):
-            Path to save quality controlled radial file. Defaults to None.
-        clean (bool, optional):
-            Remove any row of data where the primary flag equals 4 (Failure flag). Defaults to False.
-        clean_path (str or Path, optional):
-            Path to save quality controlled radial file with data that fails qc removed. Defaults to None.
-
-    Returns:
-        Radial object: A quality controlled radial file.
-    """
-    qc_values = qc_values or dict(
-        qc_qartod_avg_radial_bearing=dict(reference_bearing=151, warning_threshold=15, failure_threshold=30),
-        qc_qartod_radial_count=dict(min_count=75.0, low_count=225.0),
-        qc_qartod_maximum_velocity=dict(max_speed=300.0, high_speed=100.0),
-        qc_qartod_spatial_median=dict(
-            radial_smed_range_cell_limit=2.1, radial_smed_angular_limit=10, radial_smed_current_difference=30
-        ),
-        qc_qartod_temporal_gradient=dict(gradient_temp_fail=32, gradient_temp_warn=25),
-        qc_qartod_primary_flag=dict(
-            include=[
-                "qc_qartod_syntax",
-                "qc_qartod_valid_location",
-                "qc_qartod_radial_count",
-                "qc_qartod_maximum_velocity",
-                "qc_qartod_spatial_median",
-            ]
-        ),
-    )
-
-    if not isinstance(radial_file, Radial):
-        r = Radial(radial_file)
-    else:
-        r = radial_file
-
-    if r.is_valid():
-        if clean:
-            rclean = copy.deepcopy(r)
-        t0 = r.time - dt.timedelta(hours=1)
-        previous_radial = "{}_{}{}".format(
-            "_".join(r.file_name.split("_")[:2]), t0.strftime("%Y_%m_%d_%H%M"), os.path.splitext(r.file_name)[1]
-        )
-        previous_full_file = os.path.join(os.path.dirname(r.full_file), previous_radial)
-        qc_keys = qc_values.keys()
-
-        # run high frequency radar qartod tests on open radial file
-        r.initialize_qc()
-        r.qc_qartod_syntax()
-
-        if "qc_qartod_maximum_velocity" in qc_keys:
-            r.qc_qartod_maximum_velocity(**qc_values["qc_qartod_maximum_velocity"])
-
-        # run valid location test whether or not there is an option specified in qc_values
-        if "qc_qartod_valid_location" in qc_keys:
-            r.qc_qartod_valid_location(
-                **qc_values["qc_qartod_valid_location"])  # allows the use_mask option to be passed to the test
-        else:
-            r.qc_qartod_valid_location()
-
-        if "qc_qartod_radial_count" in qc_keys:
-            r.qc_qartod_radial_count(**qc_values["qc_qartod_radial_count"])
-
-        if "qc_qartod_spatial_median" in qc_keys:
-            r.qc_qartod_spatial_median(**qc_values["qc_qartod_spatial_median"])
-
-        if "qc_qartod_temporal_gradient" in qc_keys:
-            r.qc_qartod_temporal_gradient(previous_full_file, **qc_values["qc_qartod_temporal_gradient"])
-
-        if "qc_qartod_stuck_value" in qc_keys:
-            r.qc_qartod_stuck_value(**qc_values["qc_qartod_stuck_value"])
-            # r.qc_qartod_stuck_value_v2(**qc_values['qc_qartod_stuck_value'])
-
-        if "qc_qartod_avg_radial_bearing" in qc_keys:
-            r.qc_qartod_avg_radial_bearing(**qc_values["qc_qartod_avg_radial_bearing"])
-
-        # --------------------------------------------------------------------------
-        # Tests that have not been included in the QARTOD manual
-        if "qc_qartod_stuck_value_version_2" in qc_keys:
-            r.qc_qartod_stuck_value_version_2(**qc_values["qc_qartod_stuck_value"])
-            # r.qc_qartod_stuck_value_v2(**qc_values['qc_qartod_stuck_value'])
-        # --------------------------------------------------------------------------
-
-        # Primary flag test is performed last
-        if "qc_qartod_primary_flag" in qc_keys:
-            r.qc_qartod_primary_flag(**qc_values["qc_qartod_primary_flag"])
-
-        if clean:
-            d = rclean.data
-            dqc = r.data
-            if "PRIM" in r.data:
-                rt = d[dqc["PRIM"] != 4]
-                rclean.data = rt
-
-                for key in rclean._tables.keys():
-                    table = rclean._tables[key]
-                    if "LLUV" in table["TableType"]:
-                        rclean._tables[1]["TableRows"] = rt.shape[0]
-                # else:
-                #   warning that it didn't update number of table rows
-            # else:
-            # warning of failure to update file, the original will be exported
-
-        # Export radial file to either a radial or netcdf
-        if export:
-            if export == "radial":
-                r.to_ruv(os.path.join(save_path, r.file_name))
-            elif export == "netcdf-tabular":
-                r.to_netcdf(os.path.join(save_path, r.file_name), "tabular")
-            elif export == "netcdf-gridded":
-                r.to_netcdf(os.path.join(save_path, r.file_name), "gridded")
-
-            if clean:
-                if export == "radial":
-                    rclean.to_ruv(os.path.join(clean_path, rclean.file_name))
-                elif export == "netcdf-tabular":
-                    rclean.to_netcdf(os.path.join(clean_path, rclean.file_name), "tabular", prepend_extension=True)
-                elif export == "netcdf-gridded":
-                    rclean.to_netcdf(os.path.join(clean_path, rclean.file_name), "gridded", prepend_extension=True)
-        else:
-            return r
-
-
 def concat(rlist, range_minmax=None, bearing=None,
            method="gridded", enhance=False, parallel=False):
     """
@@ -382,6 +242,26 @@ class Radial(fileParser):
             elif 'RINF' in table['TableType']:
                 self.range_information.drop(self.range_information.index[:], inplace=True)
                 self._tables[key]['data'] = self.range_information
+
+    def duplicate_test_check(self, test_str, recalculate=False):
+        if test_str in self.data.columns:
+            if recalculate:
+                logger.warning(f"Overwriting QC test {test_str} results.")
+                # Remove the previous results column from the dataframe
+                # and remove tableheader labels from protected attributes
+                # (otherwise there will be an error in writing the file to ruv)
+                self.data.drop(test_str, axis=1,inplace=True)
+                self._tables[1]["_TableHeader"][0].remove(test_str)
+                self._tables[1]["_TableHeader"][1].remove("(flag)")
+                # Remove the previous QCTest information in the header
+                if test_str in self.metadata['QCTest']:
+                    del self.metadata['QCTest'][test_str]
+                return False
+            else:
+                logger.warning(f"Cannot run QC test {test_str} more than once. Exiting test.")
+                return True
+        else:
+            return False
 
     def mask_over_land(self, subset=False, res='high'):
         """
@@ -1578,37 +1458,48 @@ class Radial(fileParser):
             "GreatCircle",
             "GeodVersion",
             "LLUVTrustData",
+            "Callsign",
             "RangeStart",
             "RangeEnd",
             "RangeResolutionKMeters",
+            "RangeCells",
+            "DopplerCells",
+            "DopplerInterpolation",
             "AntennaBearing",
             "ReferenceBearing",
             "AngularResolution",
-            "SpatialResolution",
             "PatternType",
             "PatternDate",
             "PatternResolution",
+            "PatternSmoothing",
+            "PatternUUID",
+            "AverageSignalToNoise",
+            "AverageDistanceToPattern",
+            "AverageDistanceToPatternFull",
             "TransmitCenterFreqMHz",
-            "DopplerResolutionHzPerBin",
+            "TransmitBandwidthKHz",
+            "TransmitSweepRateHz",
+            "TransmitTimingAlignmentUs",
+            "TransmitAttenuationDB",
             "FirstOrderMethod",
             "BraggSmoothingPoints",
-            "CurrentVelocityLimits",
+            "CurrentVelocityLimit",
             "BraggHasSecondOrder",
             "RadialBraggPeakDropOff",
             "RadialBraggPeakNull",
             "RadialBraggNoiseThreshold",
+            "RadialSplitBraggRatio",
+            "RadialDCBlock",
             "PatternAmplitudeCorrections",
             "PatternPhaseCorrections",
             "PatternAmplitudeCalculations",
             "PatternPhaseCalculations",
             "RadialMusicParameters",
-            "MergedCount",
-            "RadialMinimumMergePoints",
             "FirstOrderCalc",
             "MergeMethod",
+            "MergedCount",
+            "RadialMinimumMergePoints",
             "PatternMethod",
-            "TransmitSweepRateHz",
-            "TransmitBandwidthKHz",
             "SpectraRangeCells",
             "SpectraDopplerCells",
             "TableType",
@@ -1616,7 +1507,18 @@ class Radial(fileParser):
             "TableColumnTypes",
             "TableRows",
             "TableStart",
-            "CurrentVelocityLimit",
+            "LLUVDataQuality",
+            "DopplerResolutionHzPerBin",
+            "MergeMedianMethod",
+            "MergeCloseness",
+            "MergeMinimumVectors",
+            "MergeVectorLocation",
+            "MergeSources",
+            "Suite",
+            "RiverBearing",
+            "AverSignalToNoise",
+            "AverDistanceToPattern",
+            "SpatialResolution"
         ]
 
         # TableColumnTypes
@@ -2137,8 +2039,11 @@ class Radial(fileParser):
             for metadata_key, metadata_value in rcopy.metadata.items():
                 if "ProcessedTimeStamp" in metadata_key:
                     break
-                else:
-                    # print(metadata_key)
+                # Otherwise, write all metadata that occurs above the ProcessedTimeStamp
+                # UNLESS the QCTest dictionary is above this line, which happens
+                # when a previously QC'ed file has been loaded
+                # In this scenario the QCTest dictionary should not be written
+                elif not "QCTest" in metadata_key or "QCTestFormat" in metadata_key:
                     f.write("%{}: {}\n".format(metadata_key, metadata_value))
 
             # Write data tables. Anything beyond the first table is commented out.
@@ -2150,16 +2055,16 @@ class Radial(fileParser):
                 for table_key, table_value in rcopy._tables[table].items():
                     if table_key != 'data':
                         if (table_key == 'TableType') & (table == 1):
-                            if 'QCD' in rcopy.metadata:
+                            if "QCD" in rcopy.metadata:
                                 for qcd_info in rcopy.metadata['QCD']:
                                     f.write('%{}\n'.format(qcd_info))
-                            if 'QCTest' in rcopy.metadata:
+                            if "QCTest" in rcopy.metadata and "QCFileVersion" not in rcopy.metadata:
                                 f.write('%QCFileVersion: 2.0.0\n')
                                 f.write(
                                     '%QCReference: Quality control reference: IOOS QARTOD HF Radar ver 2.0 June 2022\n')
                                 f.write('%QCFlagDefinitions: 1=pass 2=not_evaluated 3=suspect 4=fail 9=missing_data\n')
                                 f.write('%QCTestFormat: "test_name [qc_thresholds]: test_result"\n')
-
+                            if "QCTest" in rcopy.metadata:
                                 for test in rcopy.metadata["QCTest"].values():
                                     f.write("%QCTest: {}\n".format(test))
                             f.write("%{}: {}\n".format(table_key, table_value))
@@ -2196,9 +2101,10 @@ class Radial(fileParser):
                     # The below block of code adds the weird header and units format that codar uses in their files
                     row_df = pd.DataFrame([rcopy._tables[1]["_TableHeader"][1]],
                                           columns=rcopy._tables[1]["_TableHeader"][0])
-                    rcopy.data.columns = rcopy._tables[1]["_TableHeader"][0]
+                    rcopy.data.columns = rcopy._tables[1]["_TableHeader"][0][0:rcopy.data.columns.shape[0]]
                     rcopy.data = pd.concat([row_df, rcopy.data], ignore_index=True)
                     rcopy.data.insert(0, "%%", np.nan)  # Insert column at the beginning of dataframe of NaNs
+                    rcopy.data["%%"] = rcopy.data["%%"].astype(object)
                     rcopy.data.iloc[
                         0, rcopy.data.columns.get_loc("%%")] = "%%"  # make the first row in the first column a '%%'
 
@@ -2273,11 +2179,12 @@ class Radial(fileParser):
         Initialize dictionary entry for QC metadata.
         """
         # Initialize dictionary entry for QC metadta
-        self.metadata['QCTest'] = {}
+        if not "QCTest" in self.metadata.keys():
+            self.metadata['QCTest'] = {}
 
     # QARTOD QC TESTS
 
-    def qc_qartod_avg_radial_bearing(self, reference_bearing, warning_threshold=15, failure_threshold=30):
+    def qc_qartod_avg_radial_bearing(self, reference_bearing, warning_threshold=15, failure_threshold=30, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2294,6 +2201,11 @@ class Radial(fileParser):
             failure_threshold (int, optional): Failure Threshold. Defaults to 30.
         """
         test_str = "Q207"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
         # Absolute value of the difference between the bearing mean and reference bearing
         absolute_difference = np.abs(self.data["BEAR"].mean() - reference_bearing)
 
@@ -2313,11 +2225,11 @@ class Radial(fileParser):
                         + f"]: See result in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
-    def qc_qartod_valid_location(self, use_mask=True, res='high', angseg=None):
+    def qc_qartod_valid_location(self, use_mask=True, res='high', angseg=None, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
-        Valid Location (Test 8)
+        Valid Location (Test 203)
         Removes radial vectors placed over land or in other unmeasureable areas
 
         Radial vector coordinates are checked against a reference file containing information about which locations
@@ -2345,6 +2257,11 @@ class Radial(fileParser):
        """
 
         test_str = "Q203"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
         flag_column = "VFLG"
         applied_test_str = ''
         success = 0  # start with none of the tests running successfully
@@ -2419,7 +2336,7 @@ class Radial(fileParser):
         self.append_to_tableheader(test_str, "(flag)")
 
 
-    def qc_qartod_radial_count(self, min_count=150, low_count=300):
+    def qc_qartod_radial_count(self, min_count=150, low_count=300, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2440,6 +2357,11 @@ class Radial(fileParser):
                 Low radial count threshold (warning) below which the file should be considered suspect. Defaults to 300.
         """
         test_str = "Q204"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
         column_flag = "VFLG"
 
         # If a vector flag is supplied by the vendor, subset by that first
@@ -2464,7 +2386,7 @@ class Radial(fileParser):
                         + f"]:  See results in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
-    def qc_qartod_maximum_velocity(self, max_speed=250, high_speed=150):
+    def qc_qartod_maximum_velocity(self, max_speed=250, high_speed=150, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2483,6 +2405,10 @@ class Radial(fileParser):
                 High Radial Speed (cm/s). Radials between high and max speed will be flagged suspect. Defaults to 150
         """
         test_str = "Q202"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
 
         self.data["VELO"] = self.data["VELO"].astype(float)  # make sure VELO is a float
 
@@ -2505,7 +2431,7 @@ class Radial(fileParser):
         self.append_to_tableheader(test_str, "(flag)")
 
     def qc_qartod_spatial_median(
-            self, smed_range_cell_limit=2.1, smed_angular_limit=10, smed_current_difference=30
+            self, smed_range_cell_limit=2.1, smed_angular_limit=10, smed_current_difference=30, recalculate=False
     ):
         """
         Integrated Ocean Observing System (IOOS)
@@ -2530,6 +2456,10 @@ class Radial(fileParser):
                 Current difference (cm/s). Defaults to 30.
         """
         test_str = "Q205"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
 
         self.data[test_str] = 1
         try:
@@ -2610,7 +2540,7 @@ class Radial(fileParser):
                         + f"]: See results in column {test_str} below"
         self.append_to_tableheader(test_str, "(flag)")
 
-    def qc_qartod_syntax(self):
+    def qc_qartod_syntax(self, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2632,6 +2562,10 @@ class Radial(fileParser):
         Link: https://ioos.noaa.gov/ioos-in-action/manual-real-time-quality-control-high-frequency-radar-surface-current-data/
         """
         test_str = "Q201"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
 
         i = 0
 
@@ -2677,7 +2611,8 @@ class Radial(fileParser):
             test_str] = f"qc_qartod_syntax ({test_str}) - Test applies to entire file. Thresholds=[N/A]: See results in column {test_str}"
         self.append_to_tableheader(test_str, "(flag)")
 
-    def qc_qartod_temporal_gradient(self, r0, gradient_temp_fail=54, gradient_temp_warn=36, apply_spatial_median=False):
+    def qc_qartod_temporal_gradient(
+            self, r0, gradient_temp_fail=54, gradient_temp_warn=36, apply_spatial_median=False, recalculate=False):
 
         """
         Integrated Ocean Observing System (IOOS)
@@ -2717,6 +2652,11 @@ class Radial(fileParser):
               the test is not applied. If True, the variable is redefined as a dictionary and the spatial
               test is applied with default threshold settings provided in code below.
         """
+        test_str = "Q206"
+
+        # check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
 
         spatial_median_metadata = 'Spatial Median QC not used'
         if isinstance(apply_spatial_median, dict):
@@ -2725,8 +2665,6 @@ class Radial(fileParser):
         elif apply_spatial_median == True:
             apply_spatial_median = {"smed_range_cell_limit": 2.1, "smed_angular_limit": 10.0, "smed_current_difference": 30.0}
             spatial_median_metadata = 'Spatial Median QC failures excluded'
-
-        test_str = "Q206"
 
         self.metadata['QCTest'][
             test_str] = f"qc_qartod_temporal_gradient ({test_str}) - Test applies to each row. Thresholds=" \
@@ -2774,7 +2712,7 @@ class Radial(fileParser):
                 "{} does not exist at specified location. Setting column {} to not_evaluated flag".format(r0, test_str)
             )
 
-    def qc_qartod_stuck_value_version_2(self, resolution=0.01, N=3):
+    def qc_qartod_stuck_value_version_2(self, resolution=0.01, N=3, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2805,9 +2743,14 @@ class Radial(fileParser):
             N (int, optional): Number of successive time steps to check. Defaults to 3.
         """
         test_str = "Q901"
+
+        # check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
         # self.data[test_str] = data
         self.metadata['QCTest'][
-            test_str] = f"qc_qartod_radial_stuck_value_version_2 ({test_str}) - Test applies to each row. Thresholds=" \
+            test_str] = f"qc_qartod_stuck_value_version_2 ({test_str}) - Test applies to each row. Thresholds=" \
                         + "[ " + f"stuck_value_resolution={str(resolution)} (cm/s) " \
                         + f"stuck_value_number_of_timesteps={str(N)}" \
                         + f"]: See results in column {test_str} below"
@@ -2871,7 +2814,7 @@ class Radial(fileParser):
         # If any points in the past radial files did not exist, set row as a not evaluated, 2, flag
         self.data.loc[rtemp.data[test_str] >= 999, test_str] = 2
 
-    def qc_qartod_stuck_value(self, resolution=0.01, N=3):
+    def qc_qartod_stuck_value(self, resolution=0.01, N=3, recalculate=False):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2900,9 +2843,14 @@ class Radial(fileParser):
             N (int, optional): Number of successive time steps to check. Defaults to 3.
         """
         test_str = "Q209"
+
+        # check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
         # self.data[test_str] = data
         self.metadata['QCTest'][
-            test_str] = f"qc_qartod_radial_stuck_value ({test_str}) - Test applies to each row. Thresholds=" \
+            test_str] = f"qc_qartod_stuck_value ({test_str}) - Test applies to each row. Thresholds=" \
                         + "[ " + f"stuck_value_resolution={str(resolution)} (cm/s) " \
                         + f"stuck_value_number_of_timesteps={str(N)}" \
                         + f"]: See results in column {test_str} below"
@@ -2963,7 +2911,103 @@ class Radial(fileParser):
         # Add new column to dataframe
         self.data[test_str] = result
 
-    def qc_qartod_primary_flag(self, include=None):
+    def qc_operator_test(self, fail_all=False, suspect_all=False, flag_segment=None, recalculate=False):
+        """
+        An operator can use this test to mark any radial as suspect or failing
+        based on their review of data/diagnostics and assessment of data quality.
+
+        Args:
+            fail_all (bool, optional): Set fail flag for all radials. Defaults to False.]
+            suspect_all (bool, optional): Set suspect flag for all radials. Defaults to False.]
+            flag_segment (array of dictionaries, optional): Used to set flags for specific areas (segments)
+                Each array element is a dictionary defined by the following keys:
+                range_min (int) :
+                    Minimum range given in kilometers
+                range_max (int) :
+                    Maximum range given in kilometers
+                bearingTrue_start (int) :
+                    Start bearing of a segment (The angular segment will start at this value given in
+                    degrees True and it will extend in a CLOCKWISE direction until it reaches the stop bearing.)
+                bearingTrue_stop (int) :
+                    Stop bearing of a segment (The angular segment begins at the start bearing and extends CLOCKWISE
+                    until it reaches this value given in degrees True.)
+                flag_value (int) : the flag value to assign to this segment
+       """
+
+        test_str = "Q211"
+
+        # check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        applied_test_str = ''
+        success = 0  # start with none of the tests running successfully
+
+        self.data[test_str] = 1  # add new column of passing values
+        if suspect_all and fail_all:
+            logger.warning(
+                f"Incompatible inputs fail_all=True and suspect_all=True. Result will be not evaluated.")
+            success = 0
+        elif fail_all:
+            self.data[test_str] = 4
+            applied_test_str += f"(all fail)"
+            success = 1
+        elif suspect_all:
+            self.data[test_str] = 3
+            applied_test_str += f"(all suspect)"
+            success = 1
+
+        if flag_segment:
+            try:
+                for seg in flag_segment:
+                    # find locations of radials in specified range and bearing limits and assign fail flags
+                    if seg['bearingTrue_stop'] - seg['bearingTrue_start'] > 0:
+                        try:
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= seg['bearingTrue_start']) & (
+                                        self.data["BEAR"] <= seg['bearingTrue_stop']), test_str
+                            ] = seg['flag_value']  # set to 4 where hfradarpy angseg sections are flagged
+                            success = 1
+                        except:
+                            logger.warning(
+                                f"qc_operator_test: segment not flagged")
+
+                    else:
+                        try:
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= seg['bearingTrue_start']) & (
+                                        self.data["BEAR"] <= 360), test_str
+                            ] = seg['flag_value']  # set to 4 where hfradarpy angseg sections are flagged
+                            self.data.loc[
+                                (self.data["RNGE"] >= seg['range_min']) & (
+                                        self.data["RNGE"] <= seg['range_max']) & (
+                                        self.data["BEAR"] >= 0) & (
+                                        self.data["BEAR"] <= seg['bearingTrue_stop']), test_str
+                            ] = seg['flag_value']  # set to 4 where hfradarpy angseg sections are flagged
+                            success = 1
+                        except:
+                            logger.warning(
+                                f"qc_operator_test segment not flagged")
+                applied_test_str += f"(flagged segment as {seg['flag_value']})"
+            except:
+                logger.warning(f"qc_operator_test flag segment not applicable or did not run successfully")
+
+        self.metadata["QCTest"][
+            test_str] = f"qc_operator_test ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: " \
+                        + f"See results in column {test_str} below"
+
+        if success == 0:
+            self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
+            logger.warning(
+                f"qc_operator_test did not execute successfully")
+
+        self.append_to_tableheader(test_str, "(flag)")
+
+    def qc_qartod_primary_flag(self, include=None, recalculate=False):
         """
         A primary flag is a single flag set to the worst case of all QC flags within the data record.
 
@@ -2973,6 +3017,10 @@ class Radial(fileParser):
                 Defaults to None, which includes all tests.
         """
         test_str = "PRIM"
+
+        # check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
 
         # Set summary flag column all equal to 1
         self.data[test_str] = 1

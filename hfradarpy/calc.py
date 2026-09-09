@@ -6,6 +6,9 @@ from shapely.geometry import Point
 from geopandas import GeoSeries
 import pandas as pd
 import datetime as dt
+from polycircles import polycircles
+from shapely.geometry.polygon import Polygon
+import shapely
 
 import logging
 
@@ -439,3 +442,89 @@ def evaluateGDOP(cell, siteLon, siteLat, g):
     gdop = math.sqrt(Cgdop.trace())
     
     return gdop
+
+
+def lonlat2km(lon_orig, lat_orig, lon, lat):
+    """
+    Convert lat/lon to distances (km) referenced to a lon/lat point.
+
+    This function will convert longitude/latitude pairs to distances in
+    kilometers east and west of a reference longitude/latitude point.  The
+    equation was obtained from Bowditch's book "The American Practical
+    Navigator, 1995 edition, page 552."
+
+    Adapted for Python from Matlab code written by Mike Cook under
+    Copyright (C) 2007 Mike Cook, Naval Postgraduate School
+    License: GPL (Gnu Public License)
+
+    Parameters:
+        lon_orig (float): Reference longitude
+        lat_orig (float): Reference latitude
+        lon (float or array-like): Target longitude(s)
+        lat (float or array-like): Target latitude(s)
+
+    Returns:
+        east (float or np.ndarray): Distance east from reference point (in km)
+        north (float or np.ndarray): Distance north from reference point (in km)
+    """
+
+    con = np.deg2rad(lat_orig)
+
+    # Calculate meters per degree latitude and longitude
+    ymetr = (111132.92
+             - 559.82 * np.cos(2 * con)
+             + 1.175 * np.cos(4 * con)
+             - 0.0023 * np.cos(6 * con))
+
+    xmetr = (111412.84 * np.cos(con)
+             - 93.50 * np.cos(3 * con)
+             + 0.0118 * np.cos(5 * con))
+
+    # Compute east and north distances in kilometers
+    east = (np.array(lon) - lon_orig) * xmetr / 1000
+    north = (np.array(lat) - lat_orig) * ymetr / 1000
+
+    return east, north
+
+def calc_index(x_ind, y_ind, X, Y, x, y):
+    for i, line in enumerate(x):
+        x_ind[i] = np.argmin(np.abs(X[1, :] - x[i]))
+        y_ind[i] = np.argmin(np.abs(Y[:, 1] - y[i]))
+    return x_ind, y_ind
+
+def gridded_index(X, Y, x, y, flag=np.nan):
+    """
+    This function gets the multidimensional index of 1d grid onto a 2d grid without interpolation. It calculates the
+    index based on the difference between two points.
+    :param X: x grid of values (M x N). Must be a numpy.ndarray
+    :param Y: y grid of values (M x N). Must be a numpy.ndarray
+    :param x: n vector of x values. Must be a numpy.ndarray
+    :param y: n vector of y values. Must be a numpy.ndarray
+    :param flag: value to use for missing data values of grid. Default is np.nan
+    :return:
+    """
+    # get mapping index
+    x_ind = np.tile(flag, x.size).astype(int)
+    y_ind = np.tile(flag, y.size).astype(int)
+
+    # Roll index calculation into other function so we can use numba for speedups
+    x_ind, y_ind = calc_index(x_ind, y_ind, X, Y, x, y)
+    return x_ind, y_ind
+
+def scircle1(lat, lon, radius, num=99):
+    """Number of vertices inside circle"""
+    polycircle = polycircles.Polycircle(latitude=lat, longitude=lon,
+                                        radius=radius*1e3,
+                                        number_of_vertices=num)
+    verticles = np.array(polycircle.vertices)
+    return verticles[:, 0], verticles[:, 1]
+
+def inpolygon(xq, yq, xv, yv):
+    """number of points inside polygon"""
+    #rst = []
+    polygon = Polygon(list(zip(xv, yv)))
+    if not polygon.is_valid:
+        polygon = polygon.buffer(0)
+
+    pts = shapely.points(xq, yq)
+    return polygon.touches(pts) | polygon.contains(pts)

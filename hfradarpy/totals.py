@@ -13,13 +13,15 @@ import re
 import io
 import os
 from pathlib import Path
-from common import fileParser, addBoundingBoxMetadata
+from hfradarpy.common import fileParser, addBoundingBoxMetadata
+from hfradarpy.calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, createLonLatGridFromTopLeftPointWera, lonlat2km, gridded_index, calc_index, scircle1, inpolygon
+from hfradarpy.io.nc import make_encoding
+from hfradarpy.hfrnet import *
 from collections import OrderedDict
-from calc import true2mathAngle, dms2dd, evaluateGDOP, createLonLatGridFromBB, createLonLatGridFromBBwera, \
-    createLonLatGridFromTopLeftPointWera
 import json
 import fnmatch
 import warnings
+import copy
 try:
     from mpl_toolkits.basemap import Basemap
 except Exception as err:
@@ -35,21 +37,28 @@ except Exception as err:
     pass
 from scipy.spatial import ConvexHull
 import geopy.distance
+from joblib import Parallel, delayed
 
 logger = logging.getLogger(__name__)
 
 
-def radBinsInSearchRadius(cell, radial, sR, g):
+def radBinsInSearchRadius(cell, radial, sR, g, oi=False, sx=0, sy=0):
     """
     This function finds out which radial bins are within the spatthresh of the
     origin grid cell.
-    The WGS84 CRS is used for distance calculations.
+    The WGS84 CRS is used for distance calculations with g.inv
+    However if oi is set to True, the distance calculations use function lonlat2km
 
     INPUT:
         cell: Series containing longitudes and latitudes of the origin grid cells
         radial: Radial object
         sR: search radius in meters
         g: Geod object according to the Total CRS
+        oi_method: (bool) Set to True if using the OI totals computation method for an expanded search radius
+                   based on a formula using the decorrelation length scales sx and sy, default is False
+        sx: meridional decorrelation length in meters (for OI method only, defaults to 0)
+        sy: zonal decorrelation length in meters (for OI method only, defaults to 0)
+
 
     OUTPUT:
         radInSr: list of the radial bins falling within the search radius of the
@@ -59,10 +68,28 @@ def radBinsInSearchRadius(cell, radial, sR, g):
     cell = cell.to_numpy()
     radLon = radial.data['LOND'].to_numpy()
     radLat = radial.data['LATD'].to_numpy()
-    # Evaluate distances between origin grid cells and radial bins
-    az12, az21, cellToRadDist = g.inv(len(radLon) * [cell[0]], len(radLat) * [cell[1]], radLon, radLat)
-    # Figure out which radial bins are within the spatthresh of the origin grid cell
-    radInSR = np.where(cellToRadDist < sR)[0].tolist()
+
+    if not oi:
+        # Compute the inverse geodesic problem (distance and azimuths)
+        # Evaluate distances between origin grid cells and radial bins
+        az12, az21, cellToRadDist = g.inv(len(radLon) * [cell[0]], len(radLat) * [cell[1]], radLon, radLat)
+        # Figure out which radial bins are within the spatthresh of the origin grid cell
+        radInSR = np.where(cellToRadDist < sR)[0].tolist()
+    else:
+        # finds distance in x and y with lonlat2km
+        dx,dy = lonlat2km( len(radLon) * [cell[0]],len(radLat) * [cell[1]], radLon, radLat)
+        # Convert azimuth1 (forward azimuth) to radians for trigonometric calculations
+        #azimuth1_rad = np.radians(az12)
+        # Calculate the zonal (east-west) and meridional (north-south) distances
+        #dx = cell2RadDist * np.sin(azimuth1_rad)  # East-West component
+        #dy = cell2RadDist * np.cos(azimuth1_rad)  # North-South component
+        # Figure out which radial bins are within the OI formula for radius of influence.
+        # The search radius is a function of the decorrelation scale. In theory, every radial
+        # could be thrown into the calculation, but it would be highly inefficient as points
+        # greater than a few decorrelation lengths away would have infinitesimally small weights.
+        # Currently using a factor of 2 as a limiting threshold:
+        normr = 2
+        radInSR = np.where(np.sqrt((dx / sx)**2 + (dy / sy)**2) < normr)[0].tolist()
 
     return radInSR
 
@@ -128,8 +155,161 @@ def totalLeastSquare(VelHeadStd):
         Cgdop = np.nan
         return u, v, C, Cgdop
 
+def totalUnWeightedLeastSquare(VelHead):
+    """
+    This function calculates the u/v components of a total vector from 2 to n
+    radial vector components using unweighted Least Square method and code
+    from uwlsTotal.py in hfrnet-rtv
 
-def makeTotalVector(rBins, rDF):
+    INPUT:
+        VelHead: DataFrame containing contributing radial velocities and bearings
+
+    OUTPUT:
+        u: U component of the total vector
+        v: V component of the total vector
+        C: covariance matrix
+        Cgdop: covariance matrix assuming uniform unit errors for all radials (i.e. all radial std=1)
+    """
+    # Convert angles from true convention to math convention
+    VelHead['HEAD'] = true2mathAngle(VelHead['HEAD'].to_numpy())
+    rHeading = VelHead['HEAD']
+
+    # Form the design matrix (i.e. the angle matrix)
+    X = np.zeros((np.size(rHeading), 2))
+    X[:, 0] = np.cos(np.deg2rad(rHeading))
+    X[:, 1] = np.sin(np.deg2rad(rHeading))
+
+    X_transpose_X = np.matmul(np.transpose(X), X)
+    det_transpose = np.linalg.det(X_transpose_X)
+
+    # Evaluate the covariance matrix C (variance(U) = C(1,1) and variance(V) = C(2,2))
+    if abs(det_transpose) > 1e-5:
+
+        C = np.linalg.inv(X_transpose_X)
+        # Calculate the u and v for the total vector
+        # Form the velocity vector
+        rSpeed = (VelHead['VELO'].to_numpy())
+        a = np.linalg.multi_dot([C, np.transpose(X), rSpeed])
+        u = a[0]
+        v = a[1]
+        # C was already calculated with all radial std=1 so is same as Cgdop
+        Cgdop = C
+        return u, v, C, Cgdop
+
+
+    else:
+        u = np.nan
+        v = np.nan
+        C = np.nan
+        Cgdop = np.nan
+        return u, v, C, Cgdop
+
+
+
+def totalOI(VelHeadLonLat, gridloc, mdlvar,errvar,sx,sy,oi_option='exponential'):
+    """
+    This function calculates the u/v components of a total vector from 2 to n
+    radial vector components using the OI method described in
+
+
+    INPUT:
+        VelHeadLonLat: DataFrame containing contributing radial velocities and bearings (in degrees True)
+        with longitude and latitude
+		gridloc: vector grid location where uv vector components are estimated
+        mdlvar: a priori model covariance of the surface currents
+                     In the pointwise approach, user can set the a priori
+                      model variance as a function of water depth, the
+                      length from the coastline, or constant.
+        errvar: observational error variance, which can be constant
+						or hourly standard deviation of radial velocity (HSTD, so called
+						temporal uncertainty). For example, if the observational
+						uncertainty in HF radar observations is 3-5 cm/s, the corresponding
+						error variance = 9-25 (cm/s)^2.
+						As a standard error,
+							HSTD^2/N can be used as the error variance.
+						N is the number of cross spectra within a given time period.
+						Although N is unknown, the bound of N is known. 1<= N <= 6.
+		sx,sy: decorrelation legnth scales
+		oi_option: option for correlation function; option == 1, Gaussian, option == 2, exponential function
+
+    OUTPUT:
+        u: U component of the total vector
+        v: V component of the total vector
+        xi: uncertainty normalized by the a priori model covariance. (2 by 2 matrix)
+			xi(0,0) : normalized uncertainty of u = <(u_hat - u)^2>/<u^2> (good :0, poor: 1)
+			xi(1,1) : normalized uncertainty of v = <(v_hat - v)^2>/<v^2> (good :0, poor: 1)
+			xi(0,1) : directional information of u and v = <(u_hat -u)(v_hat- v)>/sqrt(<u^2><v^2>)
+
+    REFERENCE: Kim, S.Y., Terrill, E.J. and Cornuelle, B.D., 2008. Mapping surface currents from
+    HF radar radial velocity measurements using optimal interpolation.
+    Journal of Geophysical Research: Oceans, 113(C10).
+
+    """
+    # Convert angles from true convention to math convention
+    VelHeadLonLat['HEAD'] = true2mathAngle(VelHeadLonLat['HEAD'].to_numpy())
+
+    nr = len(VelHeadLonLat['HEAD'])
+    #Form the angle(A) and radial_matrices
+    d2r = np.pi / 180
+    VelHeadLonLat['HEAD'] = VelHeadLonLat['HEAD'] * d2r
+
+    # Matrix R based on the length of errvar
+    if isinstance(errvar, int):
+        R = np.eye(nr) * errvar   # For constant error variance
+    else:
+        R = np.diag(errvar)  # For HSTD (hourly temporal uncertainty)
+
+
+    # P_ matrix (identity matrix scaled by mdlvar)
+    P_ = np.eye(2) * mdlvar
+
+
+    # lonlat2km equivalent
+    dx, dy = lonlat2km(VelHeadLonLat['LOND'], VelHeadLonLat['LATD'], gridloc['LOND'], gridloc['LATD'])
+
+    # Meshgrid operations for x and y locations
+    x1, x2 = np.meshgrid(VelHeadLonLat['LOND'], VelHeadLonLat['LOND'])
+    y1, y2 = np.meshgrid(VelHeadLonLat['LATD'], VelHeadLonLat['LATD'])
+    ang1, ang2 = np.meshgrid(VelHeadLonLat['HEAD'], VelHeadLonLat['HEAD'])
+
+    # lonlat2km for meshgrids
+    drx_, dry_ = lonlat2km(x1, y1, x2, y2)
+
+    if oi_option == 'gaussian':
+        cmd = np.exp(-(dx ** 2 / sx ** 2 + dy ** 2 / sy ** 2))
+        w_ = np.exp(-(drx_ ** 2 / sx ** 2 + dry_ ** 2 / sy ** 2)) * mdlvar
+    elif oi_option == 'exponential':
+        cmd = np.exp(-np.sqrt(dx ** 2 / sx ** 2 + dy ** 2 / sy ** 2))
+        w_ = np.exp(-np.sqrt(drx_ ** 2 / sx ** 2 + dry_ ** 2 / sy ** 2)) * mdlvar
+    else:
+        warn()
+
+    # Compute cmd in components (u and v)
+    cmdu = cmd * np.cos(VelHeadLonLat['HEAD'])
+    cmdv = cmd * np.sin(VelHeadLonLat['HEAD'])
+    cmd = np.column_stack([cmdu, cmdv])
+
+    # Calculate cdd
+    cdd = w_ * (np.cos(ang1) * np.cos(ang2) + np.sin(ang1) * np.sin(ang2))
+
+    # Compute cmdicdd and final values
+    #cmdicdd = np.dot(P_, np.dot(cmd.T, np.linalg.inv(cdd + R))) #slower method
+    A = cdd + R
+    X = np.linalg.solve(A, cmd)
+    cmdicdd = P_ @ X.T
+    a = np.dot(cmdicdd, VelHeadLonLat['VELO'])
+    xi = np.linalg.inv(P_) @ (P_ - np.dot(np.dot(cmdicdd, cmd), P_))
+
+
+
+    # Extract u and v from the vector a
+    u = a[0]
+    v = a[1]
+
+    return u, v, xi
+
+
+def makeTotalVector(rBins, rDF, minContrRads=3, minContrSites=2):
     """
     This function combines radial contributions to get the total vector for each
     grid cell.
@@ -138,15 +318,13 @@ def makeTotalVector(rBins, rDF):
     INPUT:
         rBins: Series containing contributing radial indices.
         rDF: DataFrame containing input Radials.
+        minContrSites: minimum number of contributing radial sites, defaults to 2.
+        minContrRads: minimum number of contributing radial vectors, defaults to 3.
 
     OUTPUT:
         totalData: Series containing u/v components and related errors of
                    total vector for each grid cell.
     """
-    # set minimum number of contributing radial sites
-    minContrSites = 2
-    # set minimum number of contributing radial vectors
-    minContrRads = 3
 
     # create output total Series
     totalData = pd.Series(np.nan, index=range(9))
@@ -193,8 +371,134 @@ def makeTotalVector(rBins, rDF):
 
     return totalData
 
+def makeTotalVector_uwls(rBins, rDF, minContrRads=3, minContrSites=2):
+    """
+    This function combines radial contributions to get the total vector for each
+    grid cell.
+    The unweighted Least Square method is used for combination.
 
-def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2):
+    INPUT:
+        rBins: Series containing contributing radial indices.
+        rDF: DataFrame containing input Radials.
+        minContrSites: minimum number of contributing radial sites, defaults to 2
+        minContrRads: minimum number of contributing radial vectors, defaults to 3
+
+    OUTPUT:
+        totalData: Series containing u/v components and related errors of
+                   total vector for each grid cell.
+
+    """
+
+
+    # create output total Series
+    totalData = pd.Series(np.nan, index=range(9))
+    # only consider contributing radial sites
+    contrRad = rBins[rBins.str.len() != 0]
+    # check if there are at least two contributing radial sites
+    if contrRad.size >= minContrSites:
+        # loop over contributing radial indices for collecting velocities and angles
+        contributions = pd.DataFrame()
+        for idx in contrRad.index:
+            contrVel = rDF.loc[idx]['Radial'].data.VELO[contrRad[idx]]  # pandas Series
+            contrHead = rDF.loc[idx]['Radial'].data.HEAD[contrRad[idx]]  # pandas Series
+            contributions = pd.concat(
+                [contributions, pd.concat([contrVel, contrHead], axis=1)])  # pandas DataFrame
+
+        # check if there are at least three contributing radial vectors
+        if len(contributions.index) >= minContrRads:
+            # combine radial contributions to get total vector for the current grid cell
+            u, v, C, Cgdop = totalUnWeightedLeastSquare(contributions)
+
+            if not math.isnan(u):
+                # populate Total Series
+                totalData.loc[0] = u  # VELU
+                totalData.loc[1] = v  # VELV
+                totalData.loc[2] = np.sqrt(u ** 2 + v ** 2)  # VELO
+                totalData.loc[3] = (360 + np.arctan2(u, v) * 180 / np.pi) % 360  # HEAD
+                totalData.loc[4] = math.sqrt(C[0, 0])  # UQAL
+                totalData.loc[5] = math.sqrt(C[1, 1])  # VQAL
+                totalData.loc[6] = C[0, 1]  # CQAL
+                totalData.loc[7] = math.sqrt(C.trace())  # GDOP
+                #the following formula was used in hfrprogs
+                #totalData.loc[7] = math.sqrt(0.5 * (C.trace() + math.sqrt((C.trace() ** 2) - 4 * np.linalg.det(C))))
+                totalData.loc[8] = len(contributions.index)  # NRAD
+
+    return totalData
+
+def makeTotalVector_oi(rBins,rDF, mdlvar=1,errvar=1,sx=1,sy=1,minContrRads=3,minContrSites=2,oi_option='exponential'):
+    """
+    This function combines radial contributions to get the total vector for each
+    grid cell.
+    The optimal interpolation method is used for combination.
+
+    INPUT:
+        rBins: Series containing contributing radial indices.
+        rDF: DataFrame containing input Radials.
+        minContrSites: minimum number of contributing radial sites, defaults to 2.
+        minContrRads: minimum number of contributing radial vectors, defaults to 3.
+
+    OUTPUT:
+        totalData: Series containing u/v components and related errors of
+                   total vector for each grid cell.
+    """
+
+
+    # separate out the grid location information from rBins
+    gridloc = rBins[['LOND','LATD']]
+    rBins = rBins.drop(['LOND', 'LATD'],inplace=False)
+
+
+    # create output total Series
+    totalData = pd.Series(np.nan, index=range(9))
+    # only consider contributing radial sites
+    contrRad = rBins[rBins.str.len() != 0]
+    # check if there are at least two contributing radial sites
+    if contrRad.size >= minContrSites:
+        # loop over contributing radial indices for collecting velocities and angles
+        vel_list = []
+        head_list = []
+        lon_list = []
+        lat_list = []
+
+        for idx in contrRad.index:
+            rad = rDF.loc[idx]['Radial'].data
+            sel = contrRad[idx]
+
+            vel_list.append(rad.VELO[sel])
+            head_list.append(rad.HEAD[sel])
+            lon_list.append(rad.LOND[sel])
+            lat_list.append(rad.LATD[sel])
+
+        if vel_list:
+            contributions = pd.DataFrame({
+                "VELO": np.concatenate(vel_list),
+                "HEAD": np.concatenate(head_list),
+                "LOND": np.concatenate(lon_list),
+                "LATD": np.concatenate(lat_list),
+            })
+
+
+        # check if there are at least three contributing radial vectors
+        if len(contributions.index) >= minContrRads:
+            # combine radial contributions to get total vector for the current grid cell
+            u, v, xi = totalOI(contributions,gridloc,mdlvar,errvar,sx,sy,oi_option)
+
+            if not math.isnan(u):
+                # populate Total Series
+                totalData.loc[0] = u  # VELU
+                totalData.loc[1] = v  # VELV
+                totalData.loc[2] = np.sqrt(u ** 2 + v ** 2)  # VELO
+                totalData.loc[3] = (360 + np.arctan2(u, v) * 180 / np.pi) % 360  # HEAD
+                totalData.loc[4] = xi[0, 0]  # Uerr, normalized uncertainty of u (good: 0 poor: 1)
+                totalData.loc[5] = xi[1, 1]  # Verr, normalized uncertainty of v (good: 0 poor: 1)
+                totalData.loc[6] = xi[0, 1]  # directional info of u and v (UV covariance)
+                totalData.loc[7] = math.sqrt(xi[0,0] ** 2 + xi[1,1] ** 2)  # OI Total Errors
+                totalData.loc[8] = len(contributions.index)  # NRAD
+
+    return totalData
+
+
+def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True, runParallel=True):
     """
     This function generataes total vectors from radial measurements using the
     weighted Least Square method for combination.
@@ -207,6 +511,14 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2):
         gRes: grid resoultion in meters
         tStp: timestamp in datetime format (YYYY-MM-DD hh:mm:ss)
         minContrSites: minimum number of contributing radial sites (default to 2)
+        minContrRads: minimum number of contributing radial vectors (default to 3)
+        method: can be 'wls','uwls' or 'oi', default is 'wls'
+        mdlvar: model variance (for OI method only)
+        errvar: error variance (for OI method only)
+        sx: x decorrelation length scale (for OI method only)
+        sy: y decorrelation length scale (for OI method only)
+        oi_weighting: either 'gaussian' or 'exponential' (for OI method only, default to 'exponential')
+        tempthreshold: currently not used, was an option in hfrprogs to allow for a window of timestamps for radial contributions
 
     OUTPUT:
         Tcomb: Total object generated by the combination
@@ -283,30 +595,258 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2):
         combineRadBins = pd.DataFrame(columns=range(len(Tcomb.data.index)))
 
         # Figure out which radial bins are within the spatthresh of each grid cell
+        if method == 'oi':
+            oi = True
+        else:
+            oi = False
+
         for Rindex, Rrow in rDF.iterrows():
             rad = Rrow['Radial']
-            thisRadBins = Tcomb.data.loc[:, ['LOND', 'LATD']].apply(lambda x: radBinsInSearchRadius(x, rad, sRad, g),
+            thisRadBins = Tcomb.data.loc[:, ['LOND', 'LATD']].apply(lambda x: radBinsInSearchRadius(x, rad, sRad, g, oi, sx, sy),
                                                                     axis=1)
+
             combineRadBins.loc[Rindex] = thisRadBins
+
+        #xylon = Tcomb.data.loc[:, ['LOND', 'LATD']]
 
         # Loop over grid points and pull out contributing radial vectors
         combineRadBins = combineRadBins.T
-        totData = combineRadBins.apply(lambda x: makeTotalVector(x, rDF), axis=1)
+        gridpoints = Tcomb.data[['LOND', 'LATD']]
+        # The OI method requires that longitude and latitude values to be included
+        # because of how it sets the radius of influence for inputs.
+        if oi:
+            combineRadBins['LOND'] = gridpoints['LOND']
+            combineRadBins['LATD'] = gridpoints['LATD']
+
+        if method == 'wls':
+            totData = combineRadBins.apply(lambda x: makeTotalVector(x, rDF), axis=1)
+        elif method == 'uwls':
+            totData = combineRadBins.apply(lambda x: makeTotalVector_uwls(x, rDF, minContrRads=minContrRads, minContrSites=minContrSites), axis=1)
+        elif method == 'oi':
+
+            if runParallel:
+                totData = Parallel(n_jobs=-1)(
+                    delayed(makeTotalVector_oi)(
+                    row, rDF,
+                    mdlvar=mdlvar,
+                    errvar=errvar,
+                    sx=sx,
+                    sy=sy,
+                    minContrRads=minContrRads,
+                    minContrSites=minContrSites,
+                    oi_option=oi_option
+                )
+                for _, row in combineRadBins.iterrows()
+                )
+                totData = pd.DataFrame(totData)
+            else:
+                totData = combineRadBins.apply(lambda x: makeTotalVector_oi(x,rDF,mdlvar=mdlvar,errvar=errvar,sx=sx,sy=sy,minContrRads=minContrRads,minContrSites=minContrSites,oi_option=oi_option),axis=1)
+
+        else:
+            warn = 'No combination performed: not a valid combination method'
 
         # Assign column names to the combination DataFrame
         totData.columns = ['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']
-
-        # Fill Total with combination results
         Tcomb.data[['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']] = totData
 
-        # Mask out vectors on land
-        Tcomb.mask_over_land(subset=True)
+        if useLandMask:
+            # Mask out vectors on land
+            Tcomb.mask_over_land(subset=True)
 
-        # Get the indexes of grid cells without total vectors
-        indexNoVec = Tcomb.data[Tcomb.data['VELU'].isna()].index
-        # Delete these row indexes from DataFrame
-        Tcomb.data.drop(indexNoVec, inplace=True)
-        Tcomb.data.reset_index(level=None, drop=False,
+        if dropPoints:
+            # Get the indexes of grid cells without total vectors
+            indexNoVec = Tcomb.data[Tcomb.data['VELU'].isna()].index
+            # Delete these row indexes from DataFrame
+            Tcomb.data.drop(indexNoVec, inplace=True)
+            Tcomb.data.reset_index(level=None, drop=False,
+                               inplace=True)  # Set drop=True if the former indices are not necessary
+
+        if Tcomb.data.empty:
+            warn = 'No combination performed: no overlap in radial coverages'
+
+    else:
+        warn = 'No combination performed: not enough contributing radial sites'
+
+    return Tcomb, warn
+
+def convert_to_RadialInfoObj(r):
+    """
+    Input:
+    hfradarpy Radial data structure
+
+    Output:
+    HFRNet RadialInfoObj
+    """
+
+    currRadial = RadialInfo()
+    currRadial.time = r.time
+    currRadial.site = r.metadata['Site']
+    currRadial.network = ""
+    currRadial.patterntype = r.metadata['PatternType']
+    currRadial.manufacturer = r.metadata['Manufacturer']
+    currRadial.file = r.file_name
+    currRadial.dir = r.file_path
+    currRadial.sitelatitude = np.float64(r.metadata['Origin'].split()[0])
+    currRadial.sitelongitude = np.float64(r.metadata['Origin'].split()[1])
+    currRadial.maxrange = r.data['RNGE'].max()
+    currRadial.isNew = True
+    currRadial.longitude = r.data['LOND']
+    currRadial.latitude = r.data['LATD']
+    currRadial.speed = r.data['VELO']
+    currRadial.heading = r.data['BEAR']
+
+    return currRadial
+
+#def combineRadials_hfrnet(rDF, compTotInput, sRad, gRes, tStp, minContrSites=2, minContrRads=3, tempthreshold=0.0208, useLandMask=True, dropPoints=True):
+def combineRadials_hfrnet(rDF, compTotInput, sRad, gRes, tStp, minContrSites=2, minContrRads=3, tempthreshold=None, method='uwls', mdlvar=1, errvar=1,sx=1, sy=1, oi_weighting='exponential', useLandMask=True, dropPoints=True):
+    """
+    This function generataes total vectors from radial measurements using the
+    HFRNet code base.
+
+    INPUT:
+        rDF: DataFrame containing input Radials; indices must be the site codes.
+        compTotInput: HFRNet variable containing grid information
+        sRad: search radius for combination in meters.
+        gRes: grid resolution in meters
+        tStp: timestamp in datetime format (YYYY-MM-DD hh:mm:ss)
+        minContrSites: minimum number of contributing radial sites (default to 2)
+        minContrRads: minimum number of contributing radial vectors (default to 3)
+        tempthreshold: currently not used, default was to use window of half hour, 0.0208 day
+        method:'uwls' or 'oi'
+        mdlvar: a priori model covariance of the surface currents
+        errvar: observational error variance, which can be constant
+        sx: decorrelation length scale
+        sy: decorrelation length scale
+        oi_weighting: 'exponential' or 'gaussian'
+        useLandMask: whether to use LandMask (default to True)
+        dropPoints: whether to drop points with NaN velocities (default to True)
+
+    OUTPUT:
+        Tcomb: Total object generated by the combination
+        warn: string containing warnings related to the success of the combination
+    """
+    # Initialize empty warning string
+    warn = ''
+
+    gridGS = gpd.GeoSeries(
+        [Point(xy) for xy in zip(compTotInput.grid.ocean_xy[0], compTotInput.grid.ocean_xy[1])],
+        crs="EPSG:4326"
+    )
+
+    # Create empty total with grid
+    Tcomb = Total(grid=gridGS)
+
+    # use the data from hfradarpy rDF to create the radials variable expected by HFRNet
+    rtvInfoObj = RtvInfo()
+    rtvInfoObj.grid_search_radius = np.float64(sRad/1000)
+    rtvInfoObj.max_age = np.float64(99999999)
+    rtvInfoObj.max_rad_speed = np.float64(999)
+    rtvInfoObj.max_rtv_speed = np.float64(999)
+    rtvInfoObj.min_rad_sites = np.float64(minContrSites)
+    rtvInfoObj.min_radials = np.float64(minContrRads)
+    rtvInfoObj.uwls_max_hdop = np.float64(999)
+    rtvInfoObj.uwls_max_hdop_ascii = np.float64(999)
+    rtvInfoObj.uwls_max_hdop_nc = np.float64(999)
+    rtvInfoObj.oi_mdlvar = np.float64(mdlvar)
+    rtvInfoObj.oi_errvar = np.float64(errvar)
+    rtvInfoObj.oi_sx = np.float64(sx)
+    rtvInfoObj.oi_sy = np.float64(sy)
+    rtvInfoObj.oi_weighting = oi_weighting
+    rtvInfoObj.method = method
+    rtvInfoObj.new_state = None  # not really using this feature, computing for all grid points instead of only ones affected by the new radials
+    rtvInfoObj.current_state = None
+
+    nSites = len(rDF)
+    radials = []
+    for radindx in range(nSites):
+        radials.append(convert_to_RadialInfoObj(rDF.iloc[radindx, 0]))
+
+    # Check if there are enough contributing radial sites
+    if rDF.size >= minContrSites:
+        # Fill site_source DataFrame with contributing radials information
+        siteNum = 0  # initialization of site number
+        for Rindex, Rrow in rDF.iterrows():
+            siteNum = siteNum + 1
+            rad = Rrow['Radial']
+            thisRadial = pd.DataFrame(index=[Rindex],
+                                      columns=['#', 'Name', 'Lat', 'Lon', 'Coverage(s)', 'RngStep(km)', 'Pattern',
+                                               'AntBearing(NCW)'])
+            thisRadial['#'] = siteNum
+            thisRadial['Name'] = Rindex
+            if rad.is_wera:
+                if 'Longitude(dd)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lon'] = float(rad.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+                    if rad.metadata['Longitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                        thisRadial['Lon'] = -thisRadial['Lon']
+                elif 'Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lon'] = dms2dd(list(
+                        map(int, rad.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+                    if rad.metadata['Longitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'W':
+                        thisRadial['Lon'] = -thisRadial['Lon']
+                if 'Latitude(dd)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lat'] = float(rad.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][:-1])
+                    if rad.metadata['Latitude(dd)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                        thisRadial['Lat'] = -thisRadial['Lat']
+                elif 'Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray' in rad.metadata.keys():
+                    thisRadial['Lat'] = dms2dd(list(
+                        map(int, rad.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][:-2].split('-'))))
+                    if rad.metadata['Latitude(deg-min-sec)OfTheCenterOfTheReceiveArray'][-1] == 'S':
+                        thisRadial['Lat'] = -thisRadial['Lat']
+                thisRadial['Coverage(s)'] = float(rad.metadata['ChirpRate'].replace('S', '')) * int(
+                    rad.metadata['Samples'])
+                thisRadial['RngStep(km)'] = float(rad.metadata['Range'].split()[0])
+                thisRadial['Pattern'] = 'Internal'
+                thisRadial['AntBearing(NCW)'] = float(rad.metadata['TrueNorth'].split()[0])
+            else:
+                thisRadial['Lat'] = float(rad.metadata['Origin'].split()[0])
+                thisRadial['Lon'] = float(rad.metadata['Origin'].split()[1])
+                thisRadial['Coverage(s)'] = float(rad.metadata['TimeCoverage'].split()[0])
+                if 'RangeResolutionKMeters' in rad.metadata:
+                    thisRadial['RngStep(km)'] = float(rad.metadata['RangeResolutionKMeters'].split()[0])
+                elif 'RangeResolutionMeters' in rad.metadata:
+                    thisRadial['RngStep(km)'] = float(rad.metadata['RangeResolutionKMeters'].split()[0]) * 0.001
+                thisRadial['Pattern'] = rad.metadata['PatternType'].split()[0]
+                thisRadial['AntBearing(NCW)'] = float(rad.metadata['AntennaBearing'].split()[0])
+            Tcomb.site_source = pd.concat([Tcomb.site_source, thisRadial])
+
+        # Insert timestamp
+        Tcomb.time = tStp
+
+        # Fill Total with some metadata
+        Tcomb.metadata['TimeZone'] = rad.metadata[
+            'TimeZone']  # trust all radials have the same, pick from the last radial
+        Tcomb.metadata['AveragingRadius'] = str(sRad / 1000) + ' km'
+        Tcomb.metadata['GridAxisOrientation'] = '0.0 DegNCW'
+        Tcomb.metadata['GridSpacing'] = str(gRes / 1000) + ' km'
+        if method == 'uwls':
+            U_totals = rtvComputeTotals(compTotInput, radials, rtvInfoObj)
+        elif method == 'oi':
+            U_totals = rtvComputeTotals(compTotInput, radials, rtvInfoObj)
+        else:
+            warn = 'No combination performed: invalid method'
+            return Tcomb, warn
+
+        # Put U_totals information into the Tcomb variable used by hfraadarpy
+        Tcomb.data['VELU'] = U_totals.u_xvel
+        Tcomb.data['VELV'] = U_totals.v_yvel
+        Tcomb.data['VELO'] = np.sqrt(U_totals.u_xvel ** 2 + U_totals.v_yvel ** 2)
+        Tcomb.data['HEAD'] = (360 + np.arctan2(U_totals.u_xvel, U_totals.v_yvel) * 180 / np.pi) % 360
+        Tcomb.data['UQAL'] = U_totals.dopx
+        Tcomb.data['VQAL'] = U_totals.dopy
+        Tcomb.data['CQAL'] = (U_totals.hdop ** 2) / 2 # backing this out from HDOP so may not have original sign and assumes C[1,0] and C[0,1] are same
+        Tcomb.data['GDOP'] = U_totals.hdop
+        Tcomb.data['NRAD'] = U_totals.nRads
+
+        if useLandMask:
+            # Mask out vectors on land
+            Tcomb.mask_over_land(subset=True)
+
+        if dropPoints:
+            # Get the indexes of grid cells without total vectors
+            indexNoVec = Tcomb.data[Tcomb.data['VELU'].isna()].index
+            # Delete these row indexes from DataFrame
+            Tcomb.data.drop(indexNoVec, inplace=True)
+            Tcomb.data.reset_index(level=None, drop=False,
                                inplace=True)  # Set drop=True if the former indices are not necessary
 
         if Tcomb.data.empty:
@@ -397,8 +937,8 @@ class Total(fileParser):
         # if mask_over_land:
         #     self.mask_over_land()
 
-        if not grid.empty:
-            self.initialize_grid(grid)
+            if not grid.empty:
+                self.initialize_grid(grid)
 
     def empty_total(self):
         """
@@ -485,7 +1025,7 @@ class Total(fileParser):
             waterIndex: list containing the indices of total vectors lying on water.
         """
         # Load the reference file (GeoPandas "naturalearth_lowres")
-        mask_dir = '.hfradarpy'
+        mask_dir = Path(__file__).with_name(".hfradarpy")
         if (res == 'high'):
             maskfile = os.path.join(mask_dir, 'ne_10m_admin_0_countries.shp')
         else:
@@ -511,6 +1051,26 @@ class Total(fileParser):
             self.data = self.data.loc[waterIndex].reset_index()
         else:
             return waterIndex
+
+    def duplicate_test_check(self, test_str, recalculate=False):
+        if test_str in self.data.columns:
+            if recalculate:
+                logger.warning(f"Overwriting QC test {test_str} results.")
+                # Remove the previous results column from the dataframe
+                # and remove tableheader labels from protected attributes
+                # (otherwise there will be an error in writing the file to ruv)
+                self.data.drop(test_str, axis=1,inplace=True)
+                self._tables[1]["_TableHeader"][0].remove(test_str)
+                self._tables[1]["_TableHeader"][1].remove("(flag)")
+                # Remove the previous QCTest information in the header
+                if test_str in self.metadata['QCTest']:
+                    del self.metadata['QCTest'][test_str]
+                return False
+            else:
+                logger.warning(f"Cannot run QC test {test_str} more than once. Exiting test.")
+                return True
+        else:
+            return False
 
     def plot_Basemap(self, lon_min=None, lon_max=None, lat_min=None, lat_max=None, shade=False, show=True):
         """
@@ -780,6 +1340,136 @@ class Total(fileParser):
             plt.show()
 
         return fig
+
+    def to_xarray(self, model="gridded", grid=None, enhance=False, user_attributes=None):
+        """
+        Helper function
+
+        Args:
+            model (str, optional):
+                Create a 'tabular' (time) or 'gridded' (time, range, bearing) xarray dataset. Defaults to 'tabular'.
+
+        """
+        # Make a copy so that the original total object is not altered by this function
+        tcopy = copy.deepcopy(self)
+
+        #if model == "tabular":
+            #ds = rcopy._to_xarray_tabular(enhance)
+        if model == "gridded":
+            ds = tcopy._to_xarray_gridded(grid=grid)
+        else:
+            raise ValueError("Please enter a valid data model type. Must be a string 'tabular' or 'gridded'")
+        return ds
+
+    def _to_xarray_gridded(self, grid=None):
+        """
+        Convert total file to an xarray dataset on a total grid.
+        This dataset has dimensions of time, depth, lon and lat..
+
+        Adapted from MATLAB code by Mark Otero
+        http://cordc.ucsd.edu/projects/mapping/documents/HFRNet_Radial_NetCDF.pdf
+
+        Args:
+            grid (str or GeoSeries, optional):
+                If str, it is the full path and file name to a text file containing grid locations with format
+                longitude1 latitude1
+                longitude2 latitude2   etc.
+                If GeoSeries, the unique latitudes and longitudes are used to create the xarray grid
+                The default is None, and in this case, the latitude and longitude values in the Total object
+                are used to create the xarray grid.
+
+        Returns:
+            xarray.Dataset: total file converted to an xarray dataset with dimensions of time, depth, latitude and longitude
+        """
+        logging.info("Converting total matrix to multidimensional dataset")
+
+        # Intitialize empty xarray dataset
+        ds = xr.Dataset()
+
+        # CF Standard: T, Z, Y, X
+        coords = ("time", "depth", "lat", "lon")
+
+        # time = timestamp_from_lluv_filename(mat_file)
+        # time_index = pd.date_range(time.strftime('%Y-%m-%d %H:%M:%S'), periods=1)  # create pandas datetimeindex from time
+        # Evaluate timestamp as number of days since 1970-01-01T00:00:00Z
+        timeDelta = self.time - dt.datetime.strptime('1970-01-01T00:00:00Z', '%Y-%m-%dT%H:%M:%SZ')
+        ncTime = timeDelta.days + timeDelta.seconds / (60 * 60 * 24)
+
+        if isinstance(grid, str) and Path(grid).exists():
+            # load csv file containing the grid  (could be passed to function instead)
+            logging.debug('{} - Reading grid file'.format(grid))
+            grid_file = pd.read_csv(grid, header=None, names=['lon', 'lat'], sep='\s+')
+            logging.debug('{} - Grid file loaded'.format(grid))
+
+            # Create a 2D grid
+            # lon, lat are 1D from the Total object or the grid CSV file
+            # x,y represent grid in 2D
+            lon_dim = np.unique(grid_file['lon'].values.astype(np.float32))
+            lat_dim = np.unique(grid_file['lat'].values.astype(np.float32))
+            # manage antimeridian crossing
+            lon_dim = np.concatenate((lon_dim[lon_dim >= 0], lon_dim[lon_dim < 0]))
+            [x, y] = np.meshgrid(lon_dim, lat_dim)
+        elif isinstance(grid, gpd.GeoSeries):
+            # extract longitudes and latitude from grid GeoSeries and insert them into numpy arrays
+            lon_dim = np.unique(grid.x.to_numpy())
+            lat_dim = np.unique(grid.y.to_numpy())
+            # manage antimeridian crossing
+            lon_dim = np.concatenate((lon_dim[lon_dim >= 0], lon_dim[lon_dim < 0]))
+            # Create total grid from longitude and latitude
+            [x, y] = np.meshgrid(lon_dim, lat_dim)
+        else:
+            lon_min = min(self.data['LOND'])
+            lon_max = max(self.data['LOND'])
+            lat_min = min(self.data['LATD'])
+            lat_max = max(self.data['LATD'])
+            unique_longitudes = np.unique(self.data['LOND'])
+            if unique_longitudes.shape[0] > 1:
+                point1 = (unique_longitudes[0], unique_latitudes[0])
+                point2 = (unique_longitudes[1], unique_latitudes[0])
+                distance_geopy = distance.geodesic(point1, point2).km
+                grid_res = round(distance_geopy) * 1000
+            else:
+                grid_res = 6000
+            gridGS = createLonLatGridFromBB(lon_min, lon_max, lat_min, lat_max, grid_res)
+            # extract longitudes and latitude from grid GeoSeries and insert them into numpy arrays
+            lon_dim = np.unique(gridGS.x.to_numpy())
+            lat_dim = np.unique(gridGS.y.to_numpy())
+            # manage antimeridian crossing
+            lon_dim = np.concatenate((lon_dim[lon_dim >= 0], lon_dim[lon_dim < 0]))
+            # Create total grid from longitude and latitude
+            [x, y] = np.meshgrid(lon_dim, lat_dim)
+
+        # mapping to convert 1d data into 2d gridded form. data_dict must be a dictionary.
+        x_ind, y_ind = gridded_index(x, y, self.data['LOND'], self.data['LATD'])
+
+        # create dictionary containing variables from dataframe in the shape of total grid
+        d = {key: np.tile(np.nan, x.shape) for key in self.data.keys()}
+
+        # Add all variables to dictionary
+        for k, v in d.items():
+            v[y_ind.astype(int), x_ind.astype(int)] = self.data[k]
+            d[k] = v
+
+        # Add extra dimensions for time (T) and depth (Z) - CF Standard: T, Z, Y, X -> T=axis0, Z=axis1
+        d = {k: np.expand_dims(np.float32(v), axis=(0, 1)) for (k, v) in d.items()}
+
+        # Add coordinate variables to x_array dataset
+        ds.coords["time"] = pd.date_range(self.time, periods=1)
+        ds.coords["depth"] = np.array([np.float32(0)])
+        ds.coords["lat"] = lat_dim.round(6)
+        ds.coords["lon"] = lon_dim.round(6)
+
+        # Add all variables to dataset
+        for k, v in d.items():
+            ds[k] = (coords, v)
+
+        # Check if calculated longitudes and latitudes align with given longitudes and latitudes
+        # plt.plot(ds.lon, ds.lat, 'bo', ds.LOND.squeeze(), ds.LATD.squeeze(), 'rx')
+
+        # Drop extraneous variables
+        ds = ds.drop_vars(["LOND", "LATD"])
+
+        return ds
 
     def to_xarray_multidimensional(self, lon_min=None, lon_max=None, lat_min=None, lat_max=None, grid_res=None):
         """
@@ -1542,6 +2232,235 @@ class Total(fileParser):
 
         self.metadata['QCTest'][
             testName] = 'Overall QC Flag - Test applies to each vector. Test checks if all QC tests are passed.'
+
+    def qc_qartod_gdop(self, max_GDOP=2, recalculate=False):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        GDOP Threshold (Test 302)
+        This test labels total velocity vectors whose GDOP is smaller than a maximum GDOP threshold
+        with a “good data” flag. Otherwise, the vectors are labeled with a “bad data” flag.
+
+        INPUTS:
+            maxGDOP: maximum allowed GDOP for normal operations
+        """
+        # Set the test name
+        test_str = 'Q302'
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:, test_str] = 1
+
+        # set bad flag for velocities not passing the test
+        self.data.loc[(self.data['GDOP'] > max_GDOP), test_str] = 4
+
+        self.metadata['QCTest'][test_str] = 'qc_qartod_gdop - Test applies to each vector. ' \
+                                            + 'Threshold=[' + f'GDOP threshold={max_GDOP}]'
+        self.metadata['QCTest'][
+            test_str] = f"qc_qartod_gdop ({test_str}) - Test applies to each row. Thresholds=" \
+                        + "[ " + f"max={str(max_GDOP)} (cm/s) " \
+                        + f"]: See results in column {test_str} below"
+
+    def qc_qartod_u_uncertainty(self, max_Uerr=0.6, recalculate=False):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        U Component Uncertainty (Test 306)
+
+        This test labels total velocity vectors whose uncertainty in the U component
+        (Uerr from the OI combination method) is smaller than a maximum uncertainty
+        threshold with a “good data” flag.
+        Otherwise, the vectors are labeled with a “bad data” flag.
+
+        INPUTS:
+            max_Uerr: maximum allowed U component uncertainty for normal operations
+        """
+        # Set the test name
+        test_str = 'Q306'
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:, test_str] = 1
+
+        # set bad flag for velocities not passing the test
+        self.data.loc[(self.data['UQAL'] > max_Uerr), test_str] = 4
+
+        self.metadata['QCTest'][
+            test_str] = f"qc_qartod_u_uncertainty ({test_str}) - Test applies to each row. Thresholds=" \
+                        + "[ " + f"max={str(max_Uerr)} (cm/s) " \
+                        + f"]: See results in column {test_str} below"
+
+    def qc_qartod_v_uncertainty(self, max_Verr=0.6, recalculate=False):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        V Component Uncertainty (Test 307)
+
+        This test labels total velocity vectors whose uncertainty in the V component
+        (Verr from the OI combination method) is smaller than a maximum uncertainty
+        threshold with a “good data” flag.
+        Otherwise, the vectors are labeled with a “bad data” flag.
+
+        INPUTS:
+            max_Verr: maximum allowed U component uncertainty for normal operations
+        """
+        # Set the test name
+        test_str = 'Q307'
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:, test_str] = 1
+
+        # set bad flag for velocities not passing the test
+        self.data.loc[(self.data['VQAL'] > max_Verr), test_str] = 4
+
+        self.metadata['QCTest'][test_str] = f"qc_qartod_v_uncertainty ({test_str}) - Test applies to each vector. " \
+                                            + "Threshold=[" + f"Threshold={max_Verr}]"
+        self.metadata['QCTest'][
+            test_str] = f"qc_qartod_v_uncertainty ({test_str}) - Test applies to each row. Thresholds=" \
+                        + "[ " + f"max={str(max_Verr)} (cm/s) " \
+                        + f"]: See results in column {test_str} below"
+
+
+    def qc_qartod_maximum_velocity(self, max_speed=250, high_speed=150, recalculate=False):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        Max Threshold (Test 303)
+        Ensures that a radial current speed is not unrealistically high.
+
+        The maximum radial speed threshold (RSPDMAX) represents the maximum reasonable surface radial velocity
+        for the given domain.
+
+        Link: https://ioos.noaa.gov/ioos-in-action/manual-real-time-quality-control-high-frequency-radar-surface-current-data/
+
+        Args:
+            max_speed (int, optional):
+                Maximum total Speed (cm/s). Totals beyond this speed will be flagged a failure. Defaults to 250
+            high_speed (int, optional):
+                High total Speed (cm/s). Totals between high and max speed will be flagged suspect. Defaults to 150
+        """
+        test_str = "Q303"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        self.data["VELO"] = self.data["VELO"].astype(float)  # make sure VELO is a float
+
+        # Add new column to dataframe for test, and set every row as passing, 1, flag
+        self.data[test_str] = 1
+
+        # velocity is less than radial_max_speed but greater than radial_high_speed, set that row as a warning, 3, flag
+        self.data.loc[
+            (self.data["VELO"].abs() < max_speed) & (self.data["VELO"].abs() > high_speed), test_str
+        ] = 3
+
+        # if velocity is greater than radial_max_speed, set that row as a fail, 4, flag
+        self.data.loc[(self.data["VELO"].abs() > max_speed), test_str] = 4
+
+        self.metadata['QCTest'][
+            test_str] = f"qc_qartod_maximum_velocity ({test_str}) - Test applies to each row. Thresholds=" \
+                        + "[ " + f"high_vel={str(high_speed)} (cm/s) " \
+                        + f"max_vel={str(max_speed)} (cm/s) " \
+                        + f"]: See results in column {test_str} below"
+
+    def qc_qartod_valid_location(self, use_mask=True, res='high', recalculate=False):
+        """
+        Integrated Ocean Observing System (IOOS)
+        Quality Assurance of Real-Time Oceanographic Data (QARTOD)
+        Valid Location (Test 305)
+        Removes radial vectors placed over land or in other unmeasureable areas
+
+        Total vector coordinates are checked against a land mask file and if they are over land,
+        they are not included in total vector calculations.
+
+        Link: https://ioos.noaa.gov/ioos-in-action/manual-real-time-quality-control-high-frequency-radar-surface-current-data/
+
+        Args:
+            use_mask (bool, optional): Use mask_over_land function. Defaults to True.
+            res (string, optional): either 'low' or 'high', Defaults to high.
+       """
+
+        test_str = "Q305"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        applied_test_str = ''
+        success = 0
+
+        self.data[test_str] = 1  # add new column of passing values
+
+        if use_mask:
+            try:
+                self.data.loc[
+                    ~self.mask_over_land(res=res), test_str] = 4  # set to 4 where land is flagged (mask_over_land)
+                applied_test_str += f"(land mask {res} res)"
+                success = 1
+            except:
+                logger.warning(f"qc_qartod_valid_location hfradarpy land mask did not run successfully")
+
+        self.metadata["QCTest"][test_str] = f"qc_qartod_valid_location ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: " \
+            + f"See results in column {test_str} below"
+
+        if success == 0:
+            self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
+            logger.warning(
+                f"qc_qartod_valid_location did not run, no {flag_column} column, land mask and angseg either not used or not successfully applied")
+
+
+
+    def qc_qartod_primary_flag(self, include=None, recalculate=False):
+        """
+        A primary flag is a single flag set to the worst case of all QC flags within the data record.
+
+        Args:
+            include (list, optional):
+                list of quality control tests which should be included in the primary flag.
+                Defaults to None, which includes all tests.
+        """
+        test_str = "PRIM"
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        # Set summary flag column all equal to 1
+        self.data[test_str] = 1
+
+        # generate dictionary of executed qc tests found in the header
+        executed = dict()
+        for b in [x.split("-")[0].strip() for x in self.metadata["QCTest"].values()]:
+            i = b.split(" ")
+            executed[i[0]] = re.sub(r"[()]", "", i[1])
+
+        if include:
+            # only add qartod tests which were set by user to executed dictionary
+            included_tests = list({key: value for key, value in executed.items() if key in include}.values())
+        else:
+            included_tests = list(executed.values())
+
+        equals_3 = self.data[included_tests].eq(3).any(axis=1)
+        self.data[test_str] = self.data[test_str].where(~equals_3, other=3)
+
+        equals_4 = self.data[included_tests].eq(4).any(axis=1)
+        self.data[test_str] = self.data[test_str].where(~equals_4, other=4)
+
+        included_test_strs = ", ".join(included_tests)
+        self.metadata['QCTest'][
+            test_str] = f'qc_qartod_primary_flag ({test_str}) - Primary Flag - Highest flag value of {included_test_strs}' + '("not_evaluated" flag results ignored)'
+        # %QCFlagDefinitions: 1=pass 2=not_evaluated 3=suspect 4=fail 9=missing_data
 
     def file_type(self):
         """

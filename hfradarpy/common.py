@@ -97,6 +97,25 @@ def timestamp_from_lluv_filename(filename):
     timestamp = dt.datetime.strptime(mat_time, "%Y_%m_%d_%H%M")
     return timestamp
 
+def timestamp_to_lluv_filename(times, pre, post, ext):
+    """
+    Convert a list of times into filenames including the string timestamp
+
+    Args:
+        times (str): datetime representations of the time
+        pre (str): prefix
+        post (str): postfix
+        ext (str): file extension
+
+    Returns:
+        filenames: filenames including the string timestamp in the format yyyy_mm_dd_HHMM
+    """
+
+    time_strings = times.strftime("%Y_%m_%d_%H%M")
+    filenames = [f"{pre}{ts}{post}.{ext}" for ts in time_strings]
+
+    return filenames
+
 
 def addBoundingBoxMetadata(obj, lon_min, lon_max, lat_min, lat_max, grid_res=None):
     """
@@ -196,6 +215,18 @@ class fileParser(object):
                                 self.metadata[key] = value
                             elif "SiteSource" in line:
                                 site_source.append(value)
+                            elif "QCTestFormat" in line:
+                                # Handles the case in which a previously QC'ed file is loaded
+                                # so that QCTest metadata is preserved in the header
+                                # set up empty dictionary
+                                self.metadata['QCTest'] = {}
+                                self.metadata[key] = value
+                            elif "QCTest:" in line:
+                                # Handles the case in which a previously QC'ed file is loaded
+                                # so that QCTest metadata is preserved in the header
+                                # fill dictionary with test information
+                                match = re.search(r'\(([^)]+)\)', value)
+                                self.metadata['QCTest'][match.group(1)] = value
                             elif table_count > 0:
                                 if key == "ProcessingTool":
                                     processing_info.append(value)
@@ -218,6 +249,12 @@ class fileParser(object):
                                     " Floor": "_Floor",
                                     " Error": "_Error",
                                     " NCW": "_NCW",
+                                    "Trg m": "Trg_m",
+                                    "TRV mps": "TRV_mps",
+                                    "A13_v,deg": "A13_v A13_deg",
+                                    "A23_v,deg": "A23_v A23_deg",
+                                    "A3dBm,deg": "A3dBm A3dBm_deg",
+                                    "Hits" : "Hits Flag"
                                 }
                                 rep = dict((re.escape(k), v) for k, v in rep.items())
                                 pattern = re.compile("|".join(rep.keys()))
