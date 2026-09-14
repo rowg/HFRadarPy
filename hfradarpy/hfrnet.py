@@ -1,6 +1,8 @@
 import logging
 import numpy as np
 import math
+from multiprocessing import Pool, Manager
+from functools import partial
 from hfradarpy.calc import scircle1, inpolygon, lonlat2km
 
 class BaseObject:
@@ -508,6 +510,276 @@ def rtvComputeTotals(compTotInput, radials, rtvInfoObj) -> RtvTotals:
 
     # Leave for now, but can call other hfradarpy routine to do the following QARTOD QC...
     # Filter total solutions: infinite, complex, speed threshold, HDOP threshold
+    iInf = np.logical_or(np.isinf(u_temp), np.isinf(v_temp))
+    iCpx = np.logical_or(np.logical_or(u_temp.imag > 0, v_temp.imag > 0),
+                         np.logical_or(dopx_temp.imag > 0, dopy_temp.imag > 0))
+    iSpd = np.sqrt(u_temp ** 2 + v_temp ** 2) > rtvInfoObj.max_rtv_speed
+    iHdop = hdop_temp > rtvInfoObj.uwls_max_hdop
+    mask = np.logical_or(np.logical_or(iInf, iCpx), np.logical_or(iSpd, iHdop))
+
+    # Mask the sites
+    u_temp[mask] = np.nan
+    v_temp[mask] = np.nan
+    dopx_temp[mask] = np.nan
+    dopy_temp[mask] = np.nan
+    hdop_temp[mask] = np.nan
+    covr_temp[mask] = np.nan
+    nRads[mask] = 0
+    nRadSites[mask] = 0
+
+    if np.any(mask):
+        msg = (f"Masked {np.sum(mask)} total solutions\n"
+               f"{np.sum(iInf)} inf, {np.sum(iCpx)} complex, "
+               f"{np.sum(iSpd)} speed, {np.sum(iHdop)} hdop")
+        logging.info(msg)
+    else:
+        logging.debug('No solutions eliminated by masking')
+
+    # Structure data
+    if np.any(nRads) > 0:
+        U_totals.lat = compTotInput.grid.ocean_xy[1]
+        U_totals.lon = compTotInput.grid.ocean_xy[0]
+        U_totals.u_xvel = u_temp
+        U_totals.v_yvel = v_temp
+        U_totals.dopx = dopx_temp
+        U_totals.dopy = dopy_temp
+        U_totals.hdop = hdop_temp
+        U_totals.covr = covr_temp
+        U_totals.nRads = nRads
+        U_totals.nSites = nRadSites
+        U_totals.grid.resolution_km = compTotInput.grid.resolution_km
+        U_totals.grid.projection = compTotInput.grid.projection
+        U_totals.grid.x_range = compTotInput.grid.x_range
+        U_totals.grid.y_range = compTotInput.grid.y_range
+        U_totals.grid.dx = compTotInput.grid.dx
+        U_totals.grid.dy = compTotInput.grid.dy
+        U_totals.grid.size = compTotInput.grid.size
+        U_totals.grid.ocean_indices = compTotInput.grid.ocean_indices
+        U_totals.grid.ocean_xy = compTotInput.grid.ocean_xy
+
+    return U_totals
+
+
+def _compute_grid_point_solution(
+        solution_point_data,
+        radials,
+        rtvInfoObj,
+        scircle_xfield_arr,
+        scircle_yfield_arr,
+        ocean_xy
+):
+    """
+    Worker function to compute total solution for a single grid point.
+    This runs in a separate process.
+
+    Args:
+        solution_point_data: dict containing grid point index and metadata
+        radials: list of RadialInfo objects
+        rtvInfoObj: RtvInfo object with parameters
+        scircle_xfield_arr: pre-computed small circle x coordinates
+        scircle_yfield_arr: pre-computed small circle y coordinates
+        ocean_xy: grid ocean x,y coordinates
+
+    Returns:
+        dict with computed total for this grid point
+    """
+    solutionIndex = solution_point_data['index']
+
+    # Get small circle coordinates for this grid point
+    scLat = scircle_yfield_arr[:, solutionIndex]
+    scLon = scircle_xfield_arr[:, solutionIndex]
+
+    nSitesContributing = 0
+    containsNewData = False
+    rpSpeed = []
+    rpHeading = []
+    rpLon = []
+    rpLat = []
+    gridloc = np.zeros((1, 2))
+    gridloc[0, 0] = ocean_xy[0][solutionIndex]
+    gridloc[0, 1] = ocean_xy[1][solutionIndex]
+
+    nSites = len(radials)
+
+    # Loop over each site to find radials within the grid point's search radius
+    for iSite in range(nSites):
+        currRadial = radials[iSite]
+        inPolPoints = inpolygon(currRadial.longitude, currRadial.latitude, scLon, scLat)
+
+        if np.any(inPolPoints):
+            rpSpeed.append(currRadial.speed[inPolPoints])
+            rpHeading.append(currRadial.heading[inPolPoints])
+            rpLon.append(currRadial.longitude[inPolPoints])
+            rpLat.append(currRadial.latitude[inPolPoints])
+            nSitesContributing = nSitesContributing + 1
+
+            if (not containsNewData) and (currRadial.isNew):
+                containsNewData = True
+
+    # Concatenate arrays if we have data
+    if len(rpSpeed) > 0:
+        rpSpeed = np.concatenate(rpSpeed)
+        rpHeading = np.concatenate(rpHeading)
+        rpLon = np.concatenate(rpLon)
+        rpLat = np.concatenate(rpLat)
+
+    # Check conditions for computing a solution
+    haveEnoughSitesContributing = nSitesContributing >= rtvInfoObj.min_rad_sites
+    haveEnoughRadials = len(rpSpeed) >= rtvInfoObj.min_radials
+
+    result = {
+        'index': solutionIndex,
+        'total': None,
+        'nRads': 0,
+        'nRadSites': 0
+    }
+
+    if containsNewData and haveEnoughSitesContributing and haveEnoughRadials:
+        # Compute total
+        if rtvInfoObj.method == 'uwls':
+            result['total'] = uwlsTotal(rpSpeed, rpHeading)
+        elif rtvInfoObj.method == 'oi':
+            result['total'] = oiTotal(
+                rpSpeed, rpHeading, rpLon, rpLat, gridloc,
+                rtvInfoObj.oi_mdlvar, rtvInfoObj.oi_errvar,
+                rtvInfoObj.oi_sx, rtvInfoObj.oi_sy,
+                rtvInfoObj.oi_weighting
+            )
+        result['nRads'] = len(rpSpeed)
+        result['nRadSites'] = nSitesContributing
+
+    return result
+
+
+def rtvComputeTotals_Parallel(compTotInput, radials, rtvInfoObj, num_workers=None) -> RtvTotals:
+    """
+    Parallelized version of rtvComputeTotals using multiprocessing.
+
+    This function computes total velocity solutions from radial velocity
+    measurements using parallel processing for grid point computations.
+
+    Args:
+        compTotInput: Configuration object with grid information
+        radials: List of RadialInfo objects
+        rtvInfoObj: RtvInfo object with processing parameters
+        num_workers: Number of worker processes (default: CPU count)
+
+    Returns:
+        RtvTotals object with computed solutions
+    """
+
+    U_totals = RtvTotals()
+
+    # reduce total grid solution space
+    nArrayLen = len(compTotInput.grid.ocean_indices)
+    gridAllRadCount = np.zeros(nArrayLen)
+    nRads = np.zeros(nArrayLen)
+    nRadSites = np.zeros(nArrayLen)
+    gridNewRadIndex = np.zeros(nArrayLen, dtype=bool)
+    nSites = len(radials)
+
+    # First pass: count overlapping sites and identify new data coverage
+    # (This loop is relatively fast and stays serial)
+    for iRadial in range(nSites):
+        currRadial = radials[iRadial]
+
+        # Compute small circle based on maximum range of data
+        scLat, scLon = scircle1(
+            currRadial.sitelatitude,
+            currRadial.sitelongitude,
+            (currRadial.maxrange + rtvInfoObj.grid_search_radius)
+        )
+
+        # Find grid points inside the small circle
+        grid_ocean_x = compTotInput.grid.ocean_xy[0]
+        grid_ocean_y = compTotInput.grid.ocean_xy[1]
+
+        if len(grid_ocean_x) != len(grid_ocean_y):
+            logging.error("ERROR: Don't have same amount of x and y vals")
+            return U_totals
+
+        inPoints = inpolygon(grid_ocean_x, grid_ocean_y, scLon, scLat)
+        gridAllRadCount = gridAllRadCount + inPoints
+
+        # Track grid points covered by new data
+        if currRadial.isNew:
+            gridNewRadIndex = np.logical_or(gridNewRadIndex, inPoints)
+
+    # Define potential solution grid points
+    sPoint = np.argwhere(np.logical_and(
+        gridNewRadIndex,
+        (gridAllRadCount >= rtvInfoObj.min_rad_sites)
+    ))
+
+    if len(sPoint) == 0:
+        logging.info('No potential total solution points found')
+        return U_totals
+
+    # Define grid small circle field names
+    scircle_xfield = ""
+    scircle_yfield = ""
+    if rtvInfoObj.grid_search_radius == np.floor(rtvInfoObj.grid_search_radius):
+        scircle_xfield = f"ocean_x_scircle{rtvInfoObj.grid_search_radius:.0f}km"
+        scircle_yfield = f"ocean_y_scircle{rtvInfoObj.grid_search_radius:.0f}km"
+    elif rtvInfoObj.grid_search_radius * 1000 == np.floor(rtvInfoObj.grid_search_radius * 1000):
+        scircle_xfield = f"ocean_x_scircle{rtvInfoObj.grid_search_radius * 1000:.0f}m"
+        scircle_yfield = f"ocean_y_scircle{rtvInfoObj.grid_search_radius * 1000:.0f}m"
+    else:
+        msg = (f"Invalid grid search radius of {rtvInfoObj.grid_search_radius}"
+               "km. Value must be a whole number when represented in meters")
+        logging.error(msg)
+        raise ValueError(msg)
+
+    # Initialize total solutions array
+    if rtvInfoObj.method == 'uwls':
+        TotalComp = [UwlsTotalInfo() for i in range(nArrayLen)]
+    elif rtvInfoObj.method == 'oi':
+        TotalComp = [OITotalInfo() for i in range(nArrayLen)]
+
+    scircle_xfield_arr = getattr(compTotInput.grid, scircle_xfield)
+    scircle_yfield_arr = getattr(compTotInput.grid, scircle_yfield)
+
+    nPoints = len(sPoint)
+
+    # PARALLEL COMPUTATION: Process grid points in parallel
+    logging.info(f"Processing {nPoints} grid points in parallel")
+
+    # Prepare data for worker processes
+    solution_point_data_list = [
+        {'index': int(sPoint[iPoint][0])}
+        for iPoint in range(nPoints)
+    ]
+
+    # Create partial function with fixed arguments
+    worker_func = partial(
+        _compute_grid_point_solution,
+        radials=radials,
+        rtvInfoObj=rtvInfoObj,
+        scircle_xfield_arr=scircle_xfield_arr,
+        scircle_yfield_arr=scircle_yfield_arr,
+        ocean_xy=compTotInput.grid.ocean_xy
+    )
+
+    # Use multiprocessing pool to parallelize
+    with Pool(processes=num_workers) as pool:
+        results = pool.map(worker_func, solution_point_data_list)
+
+    # Collect results into TotalComp array
+    for result in results:
+        idx = result['index']
+        TotalComp[idx] = result['total'] if result['total'] is not None else TotalComp[idx]
+        nRads[idx] = result['nRads']
+        nRadSites[idx] = result['nRadSites']
+
+    # Extract results into arrays
+    u_temp = np.array([tot.u for tot in TotalComp])
+    v_temp = np.array([tot.v for tot in TotalComp])
+    dopx_temp = np.array([tot.dopx for tot in TotalComp])
+    dopy_temp = np.array([tot.dopy for tot in TotalComp])
+    hdop_temp = np.array([tot.hdop for tot in TotalComp])
+    covr_temp = np.array([tot.covr for tot in TotalComp])
+
+    # Filter total solutions
     iInf = np.logical_or(np.isinf(u_temp), np.isinf(v_temp))
     iCpx = np.logical_or(np.logical_or(u_temp.imag > 0, v_temp.imag > 0),
                          np.logical_or(dopx_temp.imag > 0, dopy_temp.imag > 0))
