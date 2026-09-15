@@ -820,7 +820,7 @@ def combineRadials_hfrnet(rDF, compTotInput, sRad, gRes, tStp, minContrSites=2, 
         Tcomb.metadata['GridAxisOrientation'] = '0.0 DegNCW'
         Tcomb.metadata['GridSpacing'] = str(gRes / 1000) + ' km'
 
-        if method != "uwls" and method != "os":
+        if method != "uwls" and method != "oi":
             warn = 'No combination performed: invalid method'
             return Tcomb, warn
 
