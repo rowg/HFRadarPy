@@ -351,9 +351,39 @@ class TestCombineRadialsEngines:
         npt.assert_allclose(many_batches.to_numpy(dtype=float), one_batch.to_numpy(dtype=float),
                             rtol=1e-12, atol=1e-12)
 
+    @pytest.mark.parametrize("engine", ["loop", "vectorized"])
+    def test_flat_distance_selects_hfrprogs_radials(self, combine_grid, engine):
+        """distance='flat' counts the radials HFRProgs makeTotals does: lonlat2dist(grid point, radial) < spatthresh."""
+        rdf = _radial_dataframe(np.random.default_rng(0))
+        tot, _ = combineRadials(rdf, combine_grid, method="uwls", engine=engine, distance="flat", **self.common)
+        rad = _stackRadials(rdf)
+
+        # HFRProgs lonlat2km (Bowditch) metres per degree at the grid point's latitude
+        glon, glat = combine_grid.x.to_numpy()[:, None], combine_grid.y.to_numpy()[:, None]
+        con = np.deg2rad(glat)
+        ymetr = 111132.92 - 559.82 * np.cos(2 * con) + 1.175 * np.cos(4 * con) - 0.0023 * np.cos(6 * con)
+        xmetr = 111412.84 * np.cos(con) - 93.50 * np.cos(3 * con) + 0.0118 * np.cos(5 * con)
+        dist_km = np.hypot((rad["LOND"] - glon) * xmetr, (rad["LATD"] - glat) * ymetr) / 1000
+        expected = (dist_km < 10).sum(axis=1)
+
+        valid = tot.data["VELU"].notna().to_numpy()
+        assert valid.sum() > 20
+        npt.assert_array_equal(tot.data.loc[valid, "NRAD"].to_numpy(dtype=float), expected[valid])
+
+    def test_flat_distance_matches_loop(self, combine_grid):
+        rdf = _radial_dataframe(np.random.default_rng(1))
+        loop, _ = combineRadials(rdf, combine_grid, method="uwls", engine="loop", distance="flat", **self.common)
+        vec, _ = combineRadials(rdf, combine_grid, method="uwls", engine="vectorized", distance="flat", **self.common)
+        npt.assert_allclose(vec.data[self.columns].to_numpy(dtype=float), loop.data[self.columns].to_numpy(dtype=float),
+                            rtol=1e-6, atol=1e-6)
+
     def test_invalid_engine_raises(self, combine_grid):
         with pytest.raises(ValueError):
             combineRadials(_radial_dataframe(), combine_grid, method="uwls", engine="fast", **self.common)
+
+    def test_invalid_distance_raises(self, combine_grid):
+        with pytest.raises(ValueError):
+            combineRadials(_radial_dataframe(), combine_grid, method="uwls", distance="haversine", **self.common)
 
     def test_vectorized_oi_requires_scalar_errvar(self, combine_grid):
         with pytest.raises(ValueError):

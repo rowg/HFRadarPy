@@ -42,7 +42,7 @@ from joblib import Parallel, delayed
 logger = logging.getLogger(__name__)
 
 
-def radBinsInSearchRadius(cell, radial, sR, g, oi=False, sx=0, sy=0):
+def radBinsInSearchRadius(cell, radial, sR, g, oi=False, sx=0, sy=0, distance='geodesic'):
     """
     This function finds out which radial bins are within the spatthresh of the
     origin grid cell.
@@ -58,6 +58,9 @@ def radBinsInSearchRadius(cell, radial, sR, g, oi=False, sx=0, sy=0):
                    based on a formula using the decorrelation length scales sx and sy, default is False
         sx: meridional decorrelation length in meters (for OI method only, defaults to 0)
         sy: zonal decorrelation length in meters (for OI method only, defaults to 0)
+        distance: 'geodesic' (default) measures the search radius along the ellipsoid with g.inv.
+                  'flat' uses the flat-earth distance of HFRProgs makeTotals (lonlat2dist: lonlat2km
+                  east/north offsets from the grid cell). Not used when oi is True.
 
 
     OUTPUT:
@@ -69,7 +72,11 @@ def radBinsInSearchRadius(cell, radial, sR, g, oi=False, sx=0, sy=0):
     radLon = radial.data['LOND'].to_numpy()
     radLat = radial.data['LATD'].to_numpy()
 
-    if not oi:
+    if not oi and distance == 'flat':
+        # Flat-earth distance from the grid cell, as HFRProgs lonlat2dist
+        dx, dy = lonlat2km(cell[0], cell[1], radLon, radLat)
+        radInSR = np.where(np.sqrt(dx ** 2 + dy ** 2) < sR / 1000)[0].tolist()
+    elif not oi:
         # Compute the inverse geodesic problem (distance and azimuths)
         # Evaluate distances between origin grid cells and radial bins
         az12, az21, cellToRadDist = g.inv(len(radLon) * [cell[0]], len(radLat) * [cell[1]], radLon, radLat)
@@ -587,12 +594,13 @@ def _emptyTotData(npts):
                         columns=['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD'])
 
 
-def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls', minContrSites=2, minContrRads=3):
+def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls', minContrSites=2, minContrRads=3,
+                                   distance='geodesic'):
     """
     Vectorized equivalent of applying makeTotalVector (method='wls') or makeTotalVector_uwls
     (method='uwls') to every grid point.
 
-    Radial bins are selected with the same rule as radBinsInSearchRadius (geodesic distance < sRad),
+    Radial bins are selected with the same rule as radBinsInSearchRadius (distance < sRad),
     but the neighbor search is done for all grid points at once with a KD-tree. The 2x2 normal
     equations of each grid point are then accumulated with np.bincount and inverted in closed form.
 
@@ -604,6 +612,7 @@ def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls'
         method: 'uwls' or 'wls'
         minContrSites: minimum number of contributing radial sites
         minContrRads: minimum number of contributing radial vectors
+        distance: 'geodesic' (default) or 'flat' (HFRProgs lonlat2dist), as in radBinsInSearchRadius
 
     OUTPUT:
         totData: DataFrame (one row per grid point) with VELU, VELV, VELO, HEAD, UQAL, VQAL, CQAL, GDOP, NRAD
@@ -611,11 +620,19 @@ def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls'
     npts = len(gridLon)
     totData = _emptyTotData(npts)
 
-    gi, ri = _findRadialPairs(gridLon, gridLat, rad, sRad / 1000)
+    if distance == 'flat':
+        # The flat-earth distance can be a little shorter than the true one, so search a wider radius
+        gi, ri = _findRadialPairs(gridLon, gridLat, rad, sRad / 1000 * 1.1)
+    else:
+        gi, ri = _findRadialPairs(gridLon, gridLat, rad, sRad / 1000)
     if gi.size:
         # Exact selection rule used by radBinsInSearchRadius
-        az12, az21, dist = g.inv(gridLon[gi], gridLat[gi], rad['LOND'][ri], rad['LATD'][ri])
-        keep = dist < sRad
+        if distance == 'flat':
+            dx, dy = lonlat2km(gridLon[gi], gridLat[gi], rad['LOND'][ri], rad['LATD'][ri])
+            keep = np.sqrt(dx ** 2 + dy ** 2) < sRad / 1000
+        else:
+            az12, az21, dist = g.inv(gridLon[gi], gridLat[gi], rad['LOND'][ri], rad['LATD'][ri])
+            keep = dist < sRad
         gi, ri = gi[keep], ri[keep]
 
     if method == 'wls':
@@ -808,7 +825,8 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
     return totData
 
 
-def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True, runParallel=True, engine='loop'):
+def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True, runParallel=True, engine='loop',
+                  distance='geodesic'):
     """
     This function generataes total vectors from radial measurements using the
     weighted Least Square method for combination.
@@ -837,6 +855,11 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
                 operations; it gives the same results and is much faster (orders of magnitude for wls/uwls).
                 With engine='vectorized', minContrSites and minContrRads are also honored for method='wls'
                 and errvar must be a scalar.
+        distance: how the search radius is measured for method='wls' or 'uwls'. 'geodesic' (default) uses
+                  the distance along the Total CRS ellipsoid. 'flat' uses the flat-earth distance of HFRProgs
+                  makeTotals (lonlat2dist), to select the same radials as the MATLAB toolbox; the two differ
+                  only for radials within metres of the search radius. method='oi' always uses the HFRProgs
+                  makeTotalsOI rule.
 
     OUTPUT:
         Tcomb: Total object generated by the combination
@@ -844,6 +867,8 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
     """
     if engine not in ('loop', 'vectorized'):
         raise ValueError(f"Invalid engine '{engine}': must be 'loop' or 'vectorized'")
+    if distance not in ('geodesic', 'flat'):
+        raise ValueError(f"Invalid distance '{distance}': must be 'geodesic' or 'flat'")
 
     # Initialize empty warning string
     warn = ''
@@ -919,7 +944,8 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
             radArrays = _stackRadials(rDF)
             if method in ('wls', 'uwls'):
                 totData = makeTotalVectors_ls_vectorized(radArrays, gridLon, gridLat, sRad, g, method=method,
-                                                         minContrSites=minContrSites, minContrRads=minContrRads)
+                                                         minContrSites=minContrSites, minContrRads=minContrRads,
+                                                         distance=distance)
             elif method == 'oi':
                 totData = makeTotalVectors_oi_vectorized(radArrays, gridLon, gridLat, mdlvar=mdlvar, errvar=errvar,
                                                          sx=sx, sy=sy, minContrRads=minContrRads,
@@ -941,7 +967,7 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
 
             for Rindex, Rrow in rDF.iterrows():
                 rad = Rrow['Radial']
-                thisRadBins = Tcomb.data.loc[:, ['LOND', 'LATD']].apply(lambda x: radBinsInSearchRadius(x, rad, sRad, g, oi, sx, sy),
+                thisRadBins = Tcomb.data.loc[:, ['LOND', 'LATD']].apply(lambda x: radBinsInSearchRadius(x, rad, sRad, g, oi, sx, sy, distance),
                                                                         axis=1)
 
                 combineRadBins.loc[Rindex] = thisRadBins
