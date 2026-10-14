@@ -13,7 +13,6 @@ dependencies:
   - dask
   - geopandas
   - shapely
-  - polycircles
   - cartopy
   - matplotlib
   - cmocean
