@@ -2,6 +2,8 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import numpy.testing as npt
+import pandas as pd
 import pytest
 import sys
 import xarray as xr
@@ -11,6 +13,81 @@ from hfradarpy.radials import concat as concatenate_radials
 
 data_path = (Path(__file__).parent.with_name("examples") / "data").resolve()
 output_path = (Path(__file__).parent.with_name("examples") / "output").resolve()
+
+ROUND_TRIP_FILES = [
+    "SEAB/RDLi_SEAB_2019_01_01_0000.ruv",
+    "WERA/RDL_csw_2019_10_24_162300.ruv",
+    "WERA/RDL_UMiami_STF_2019_06_01_0000.hfrweralluv1.0",
+]
+
+
+class TestRoundTrip:
+    """Values written to .ruv and netCDF must match the radial they came from."""
+
+    def test_ruv_round_trip(self, tmp_path):
+        rad = Radial(data_path / "radials" / "ruv" / "SEAB" / "RDLi_SEAB_2019_01_01_0000.ruv")
+        out_file = tmp_path / "RDLi_SEAB_2019_01_01_0000.ruv"
+        rad.to_ruv(out_file, validate=False)
+
+        copy = Radial(out_file)
+        pd.testing.assert_frame_equal(copy.data, rad.data)
+        for key in ["Site", "TimeStamp", "Origin", "PatternType", "AngularResolution", "RangeResolutionKMeters"]:
+            assert copy.metadata[key] == rad.metadata[key]
+
+    def test_ruv_round_trip_keeps_qc_columns(self, tmp_path):
+        rad = Radial(data_path / "radials" / "ruv" / "SEAB" / "RDLi_SEAB_2019_01_01_0100.ruv", replace_invalid=False)
+        rad.initialize_qc()
+        rad.qc_qartod_syntax()
+        rad.qc_qartod_maximum_velocity(max_speed=30, high_speed=20)
+        rad.qc_qartod_spatial_median()
+        rad.qc_qartod_primary_flag()
+        out_file = tmp_path / "RDLi_SEAB_2019_01_01_0100.ruv"
+        rad.to_ruv(out_file, validate=False)
+
+        copy = Radial(out_file, replace_invalid=False)
+        for col in ["Q201", "Q202", "Q205", "PRIM"]:
+            npt.assert_array_equal(copy.data[col].to_numpy(), rad.data[col].to_numpy())
+        assert set(rad.data["Q202"]) == {1, 3, 4}
+
+    @pytest.mark.parametrize("name", ROUND_TRIP_FILES)
+    def test_tabular_netcdf_values_match_source(self, tmp_path, name):
+        rad = Radial(data_path / "radials" / "ruv" / name)
+        nc_file = tmp_path / "radial.nc"
+        rad.to_netcdf(str(nc_file), model="tabular")
+
+        with xr.open_dataset(nc_file) as ds:
+            assert ds.sizes["time"] == len(rad.data)
+            for var, col in [("velocity", "VELO"), ("u", "VELU"), ("v", "VELV"), ("lon", "LOND"),
+                             ("lat", "LATD"), ("bearing", "BEAR"), ("range", "RNGE")]:
+                npt.assert_allclose(ds[var].values, rad.data[col].to_numpy(dtype=float), rtol=0, atol=1e-6,
+                                    err_msg=var)
+            assert ds["velocity"].attrs["units"] == "cm s-1"
+
+    @pytest.mark.parametrize("name", ROUND_TRIP_FILES)
+    def test_gridded_netcdf_values_match_source(self, tmp_path, name):
+        """Each radial lands in the (range, bearing) cell containing its RNGE and BEAR; every other cell is empty.
+        (In the hfrweralluv file RNGE is the true distance of the point, so it falls within a cell, not on its centre.)"""
+        rad = Radial(data_path / "radials" / "ruv" / name)
+        nc_file = tmp_path / "radial.nc"
+        rad.to_netcdf(str(nc_file), model="gridded")
+
+        with xr.open_dataset(nc_file) as ds:
+            assert int(np.isfinite(ds["velocity"].values).sum()) == len(rad.data)
+            rng = xr.DataArray(rad.data["RNGE"].to_numpy(), dims="row")
+            bear = xr.DataArray(rad.data["BEAR"].to_numpy(), dims="row")
+            cells = ds.isel(time=0).sel(range=rng, bearing=bear, method="nearest")
+            for coord, col in [("range", "RNGE"), ("bearing", "BEAR")]:
+                half_cell = np.diff(ds[coord].values.astype(float)).min() / 2
+                assert (np.abs(cells[coord].values - rad.data[col].to_numpy()) <= half_cell + 1e-4).all(), coord
+            for var, col in [("velocity", "VELO"), ("u", "VELU"), ("v", "VELV")]:
+                npt.assert_allclose(cells[var].values, rad.data[col].to_numpy(dtype=float), rtol=0, atol=1e-4,
+                                    err_msg=var)
+
+            # Cell lon/lat are cell centres: exact when the radials sit on them, otherwise within a cell (~2 km)
+            on_centres = np.allclose(cells["range"].values, rad.data["RNGE"], atol=1e-4)
+            for var, col in [("lon", "LOND"), ("lat", "LATD")]:
+                npt.assert_allclose(cells[var].values, rad.data[col].to_numpy(dtype=float), rtol=0,
+                                    atol=1e-4 if on_centres else 0.025, err_msg=var)
 
 
 def test_codar_radial_to_tabular_netcdf():
