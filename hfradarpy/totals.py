@@ -295,7 +295,9 @@ def totalOI(VelHeadLonLat, gridloc, mdlvar,errvar,sx,sy,oi_option='exponential')
     # Compute cmdicdd and final values
     #cmdicdd = np.dot(P_, np.dot(cmd.T, np.linalg.inv(cdd + R))) #slower method
     A = cdd + R
-    X = np.linalg.solve(A, cmd)
+    # cmdicdd = P_ @ cmd.T @ inv(A). A is not exactly symmetric (lonlat2km distances depend on which point is the
+    # origin), so solve with A.T: solve(A.T, cmd).T == cmd.T @ inv(A), as in tuvOI.m
+    X = np.linalg.solve(A.T, cmd)
     cmdicdd = P_ @ X.T
     a = np.dot(cmdicdd, VelHeadLonLat['VELO'])
     xi = np.linalg.inv(P_) @ (P_ - np.dot(np.dot(cmdicdd, cmd), P_))
