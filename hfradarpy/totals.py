@@ -523,22 +523,25 @@ def _lonlat_to_xyz(lon, lat):
                                                np.sin(lat)))
 
 
-def _stackRadials(rDF):
+def _stackRadials(rDF, tStp=None, errColumn=None):
     """
     Concatenate the radial bins of all the Radial objects in rDF into flat numpy arrays.
 
     INPUT:
         rDF: DataFrame containing input Radials; indices must be the site codes.
+        tStp: time of the totals; TIME is each radial's time minus tStp, in hours (0 without tStp or radial time)
+        errColumn: name of a radial column holding a velocity uncertainty (e.g. 'ETMP', cm/s); ERRV is its square,
+                   the error variance of each radial (NaN where it is missing, zero or not requested)
 
     OUTPUT:
         rad: dictionary with LOND, LATD, VELO, HEAD and STD arrays, the SITE index of each radial bin
              and the number of sites (nsite). Rows of rDF with the same site code (for example radials
              from neighboring time steps) share one SITE index, so they count as one contributing site.
              STD is taken from ETMP or sqrt(HCSS) as in makeTotalVector (NaN when neither exists).
-             Radial bins with non-finite coordinates are dropped.
+             TIME and ERRV are described above. Radial bins with non-finite coordinates are dropped.
     """
     siteIndex, siteCodes = pd.factorize(rDF.index)
-    cols = {'LOND': [], 'LATD': [], 'VELO': [], 'HEAD': [], 'STD': [], 'SITE': []}
+    cols = {'LOND': [], 'LATD': [], 'VELO': [], 'HEAD': [], 'STD': [], 'SITE': [], 'TIME': [], 'ERRV': []}
     for k, rad in zip(siteIndex, rDF['Radial']):
         d = rad.data
         cols['LOND'].append(d['LOND'].to_numpy(dtype=float))
@@ -552,6 +555,15 @@ def _stackRadials(rDF):
         else:
             cols['STD'].append(np.full(len(d), np.nan))
         cols['SITE'].append(np.full(len(d), k))
+        offset = 0.0
+        if tStp is not None and getattr(rad, 'time', None) is not None:
+            offset = (pd.Timestamp(rad.time) - pd.Timestamp(tStp)) / pd.Timedelta(hours=1)
+        cols['TIME'].append(np.full(len(d), offset))
+        if errColumn is not None and errColumn in d.columns:
+            err = d[errColumn].to_numpy(dtype=float) ** 2
+            cols['ERRV'].append(np.where(err > 0, err, np.nan))
+        else:
+            cols['ERRV'].append(np.full(len(d), np.nan))
 
     rad = {key: np.concatenate(val) if val else np.array([]) for key, val in cols.items()}
     rad['SITE'] = rad['SITE'].astype(np.int64)
@@ -754,7 +766,8 @@ def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls'
 
 def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx=1, sy=1, minContrRads=3,
                                    minContrSites=2, oi_option='exponential', max_batch_elements=1e5,
-                                   search_factor=2, count_all_points=False):
+                                   search_factor=2, count_all_points=False, time_scale=None,
+                                   radial_errvar=False):
     """
     Vectorized equivalent of applying makeTotalVector_oi to every grid point.
 
@@ -778,6 +791,12 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
                        radBinsInSearchRadius)
         count_all_points: if True, NRAD is set at every grid point, also where there is no total vector
                           (see combineRadials)
+        time_scale: decorrelation time scale in hours. When set, the time offset of each radial from the
+                    totals (rad['TIME']) is a third dimension of the correlation function, like dx/sx and dy/sy:
+                    exp(-sqrt((dx/sx)^2 + (dy/sy)^2 + (dt/T)^2)) ('exponential') or
+                    exp(-((dx/sx)^2 + (dy/sy)^2 + (dt/T)^2)) ('gaussian'). Radials from other hours then count less
+                    than radials at the time of the totals. Default None ignores the radial times.
+        radial_errvar: if True, each radial's error variance is rad['ERRV'] where it is finite, otherwise errvar
 
     OUTPUT:
         totData: DataFrame (one row per grid point) with VELU, VELV, VELO, HEAD, UQAL, VQAL, CQAL, GDOP, NRAD,
@@ -817,6 +836,11 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
     # Convert angles from true convention to math convention (radians)
     headAll = np.deg2rad(true2mathAngle(rad['HEAD']))
     result = np.full((npts, 5), np.nan)  # u, v, xi[0,0], xi[1,1], xi[0,1]
+    # Error variance of every radial
+    errAll = np.full(rad['LOND'].size, float(errvar))
+    if radial_errvar and 'ERRV' in rad:
+        errAll = np.where(np.isfinite(rad['ERRV']), rad['ERRV'], errAll)
+    timeAll = rad['TIME'] if time_scale is not None and 'TIME' in rad else None
 
     i = 0
     while i < points.size:
@@ -837,13 +861,20 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
         dx, dy = lonlat2km(lon, lat, gridLon[batch][:, None], gridLat[batch][:, None])
         # Data-data distances
         drx, dry = lonlat2km(lon[:, None, :], lat[:, None, :], lon[:, :, None], lat[:, :, None])
+        # Squared normalized separations, with time as a third dimension when time_scale is set
+        d2_md = dx ** 2 / sx ** 2 + dy ** 2 / sy ** 2
+        d2_dd = drx ** 2 / sx ** 2 + dry ** 2 / sy ** 2
+        if timeAll is not None:
+            dt = timeAll[r]
+            d2_md = d2_md + (dt / time_scale) ** 2
+            d2_dd = d2_dd + ((dt[:, None, :] - dt[:, :, None]) / time_scale) ** 2
 
         if oi_option == 'gaussian':
-            cmd = np.exp(-(dx ** 2 / sx ** 2 + dy ** 2 / sy ** 2))
-            w_ = np.exp(-(drx ** 2 / sx ** 2 + dry ** 2 / sy ** 2)) * mdlvar
+            cmd = np.exp(-d2_md)
+            w_ = np.exp(-d2_dd) * mdlvar
         else:
-            cmd = np.exp(-np.sqrt(dx ** 2 / sx ** 2 + dy ** 2 / sy ** 2))
-            w_ = np.exp(-np.sqrt(drx ** 2 / sx ** 2 + dry ** 2 / sy ** 2)) * mdlvar
+            cmd = np.exp(-np.sqrt(d2_md))
+            w_ = np.exp(-np.sqrt(d2_dd)) * mdlvar
 
         cmd = np.where(mask, cmd, 0)
         cmd = np.stack((cmd * np.cos(head), cmd * np.sin(head)), axis=-1)  # (batch, n, 2)
@@ -851,7 +882,7 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
         cosh, sinh = np.cos(head), np.sin(head)
         cdd = w_ * (cosh[:, None, :] * cosh[:, :, None] + sinh[:, None, :] * sinh[:, :, None])
         cdd = np.where(mask[:, :, None] & mask[:, None, :], cdd, 0)
-        A = cdd + np.eye(nmax)[None, :, :] * np.where(mask, errvar, 1)[:, :, None]
+        A = cdd + np.eye(nmax)[None, :, :] * np.where(mask, errAll[r], 1)[:, :, None]
         # Solve with A transposed: A is not exactly symmetric (see totalOI)
         A = np.swapaxes(A, 1, 2)
 
@@ -894,7 +925,8 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
 
 
 def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True, runParallel=True, engine='loop',
-                  distance='geodesic', oi_search_factor=2, count_all_points=False):
+                  distance='geodesic', oi_search_factor=2, count_all_points=False, oi_time_scale=None,
+                  oi_errvar_column=None):
     """
     This function generataes total vectors from radial measurements using the
     weighted Least Square method for combination.
@@ -935,6 +967,12 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
                   makeTotalsOI rule.
         oi_search_factor: OI uses radials with sqrt((dx/sx)^2 + (dy/sy)^2) < oi_search_factor (default 2, the
                           HFRProgs makeTotalsOI rule). Values other than 2 need engine='vectorized'.
+        oi_time_scale: OI decorrelation time scale in hours (engine='vectorized'). When set, the time between each
+                       radial and tStp enters the OI correlation like a third distance, so radials from other hours
+                       (see tempthreshold) count less than radials at tStp. Default None: radial times are ignored.
+        oi_errvar_column: name of a radial column with a velocity uncertainty in cm/s, e.g. 'ETMP'
+                          (engine='vectorized'). Its square is used as the OI error variance of each radial, and errvar
+                          where it is missing or zero. Default None: errvar for every radial.
         count_all_points: if True, NRAD is the number of radials within the search radius of every grid point,
                           also where too few sites or radials gave no total vector (0 where there are none), as
                           HFRProgs TotalsNumRads. Use dropPoints=False to keep those grid points. Default False
@@ -956,6 +994,10 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
         raise ValueError("Several radials per site (repeated site codes in rDF) need engine='vectorized'")
     if engine == 'loop' and oi_search_factor != 2:
         raise ValueError("oi_search_factor other than 2 needs engine='vectorized'")
+    if engine == 'loop' and (oi_time_scale is not None or oi_errvar_column is not None):
+        raise ValueError("oi_time_scale and oi_errvar_column need engine='vectorized'")
+    if oi_time_scale is not None and not oi_time_scale > 0:
+        raise ValueError('oi_time_scale must be positive (hours)')
     if engine == 'loop' and count_all_points:
         raise ValueError("count_all_points needs engine='vectorized'")
 
@@ -1044,7 +1086,7 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
             # Find contributing radials for all grid points at once and solve the combination with array operations
             gridLon = Tcomb.data['LOND'].to_numpy(dtype=float)
             gridLat = Tcomb.data['LATD'].to_numpy(dtype=float)
-            radArrays = _stackRadials(rDF)
+            radArrays = _stackRadials(rDF, tStp=tStp, errColumn=oi_errvar_column)
             if method in ('wls', 'uwls'):
                 totData = makeTotalVectors_ls_vectorized(radArrays, gridLon, gridLat, sRad, g, method=method,
                                                          minContrSites=minContrSites, minContrRads=minContrRads,
@@ -1054,7 +1096,9 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
                                                          sx=sx, sy=sy, minContrRads=minContrRads,
                                                          minContrSites=minContrSites, oi_option=oi_option,
                                                          search_factor=oi_search_factor,
-                                                         count_all_points=count_all_points)
+                                                         count_all_points=count_all_points,
+                                                         time_scale=oi_time_scale,
+                                                         radial_errvar=oi_errvar_column is not None)
             else:
                 warn = 'No combination performed: not a valid combination method'
                 return Tcomb, warn

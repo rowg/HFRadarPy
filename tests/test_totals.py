@@ -579,6 +579,61 @@ class TestCombineRadialsWindow:
         assert both.sum() > 20
         assert (narrow.data.loc[both, "NRAD"] < default.data.loc[both, "NRAD"]).all()
 
+    OI = dict(method="oi", engine="vectorized", mdlvar=625.0, errvar=100.0, sx=10.0, sy=10.0)
+
+    def _oi(self, rdf, grid, **kwargs):
+        tot, _ = combineRadials(rdf, grid, tStp=self.t0, **self.OI, **self.common, **kwargs)
+        return tot.data[["VELU", "VELV", "UQAL", "VQAL"]].to_numpy(dtype=float)
+
+    def test_time_scale_without_other_hours_changes_nothing(self, combine_grid):
+        rdf = self._window([(0, (12.0, -7.0))])
+        npt.assert_array_equal(self._oi(rdf, combine_grid, oi_time_scale=3.0), self._oi(rdf, combine_grid))
+
+    def test_long_time_scale_is_the_unweighted_window(self, combine_grid):
+        rdf = self._window([(-1, (12.0, -7.0)), (0, (12.0, -7.0)), (1, (12.0, -7.0))])
+        window = dict(tempthreshold=pd.Timedelta(hours=1))
+        # Repeated radials at the same bins make the system nearly singular, so allow for rounding
+        npt.assert_allclose(self._oi(rdf, combine_grid, oi_time_scale=1e9, **window),
+                            self._oi(rdf, combine_grid, **window), rtol=1e-7, atol=1e-7)
+
+    def test_short_time_scale_ignores_other_hours(self, combine_grid):
+        # Radials at t-1 and t+1 describe another current; with T -> 0 they are uncorrelated with the totals
+        rdf = self._window([(-1, (40.0, 30.0)), (0, (12.0, -7.0)), (1, (40.0, 30.0))])
+        only_t = self._oi(self._window([(0, (12.0, -7.0))]), combine_grid)
+        npt.assert_allclose(self._oi(rdf, combine_grid, oi_time_scale=1e-6, tempthreshold=pd.Timedelta(hours=1)),
+                            only_t, rtol=1e-9, atol=1e-9)
+
+    def test_other_hours_count_less_with_a_shorter_time_scale(self, combine_grid):
+        rdf = self._window([(-1, (40.0, 30.0)), (0, (12.0, -7.0)), (1, (40.0, 30.0))])
+        window = dict(tempthreshold=pd.Timedelta(hours=1))
+        u = {T: self._oi(rdf, combine_grid, oi_time_scale=T, **window)[:, 0] for T in (1.0, 6.0)}
+        u[None] = self._oi(rdf, combine_grid, **window)[:, 0]
+        ok = np.isfinite(u[1.0]) & np.isfinite(u[6.0]) & np.isfinite(u[None])
+        assert ok.sum() > 20
+        # The t radials say u = 12 and the others u = 40: a shorter time scale stays closer to 12
+        assert np.median(u[1.0][ok]) < np.median(u[6.0][ok]) < np.median(u[None][ok])
+
+    def test_radial_error_column(self, combine_grid):
+        rdf = self._window([(0, (12.0, -7.0))])
+        for r in rdf["Radial"]:
+            r.data["ETMP"] = 5.0
+        npt.assert_allclose(self._oi(rdf, combine_grid, oi_errvar_column="ETMP"),
+                            combineRadials(rdf, combine_grid, tStp=self.t0, **dict(self.OI, errvar=25.0),
+                                           **self.common)[0].data[["VELU", "VELV", "UQAL", "VQAL"]].to_numpy(float),
+                            rtol=1e-12, atol=1e-12)
+        # Radials without the column use errvar
+        for r in rdf["Radial"]:
+            r.data = r.data.drop(columns="ETMP")
+        npt.assert_array_equal(self._oi(rdf, combine_grid, oi_errvar_column="ETMP"), self._oi(rdf, combine_grid))
+
+    def test_new_oi_options_need_the_vectorized_engine(self, combine_grid):
+        rdf = _radial_dataframe()
+        for kwargs in (dict(oi_time_scale=3.0), dict(oi_errvar_column="ETMP")):
+            with pytest.raises(ValueError):
+                combineRadials(rdf, combine_grid, tStp=self.t0, method="oi", engine="loop", **kwargs, **self.common)
+        with pytest.raises(ValueError):
+            combineRadials(rdf, combine_grid, tStp=self.t0, oi_time_scale=0, **self.OI, **self.common)
+
     def test_loop_engine_rejects_new_options(self, combine_grid):
         rdf = self._window([(0, (12.0, -7.0)), (1, (12.0, -7.0))])
         with pytest.raises(ValueError):
