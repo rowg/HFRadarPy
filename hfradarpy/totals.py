@@ -1534,8 +1534,13 @@ class Total(fileParser):
                 # and remove tableheader labels from protected attributes
                 # (otherwise there will be an error in writing the file to ruv)
                 self.data.drop(test_str, axis=1,inplace=True)
-                self._tables[1]["_TableHeader"][0].remove(test_str)
-                self._tables[1]["_TableHeader"][1].remove("(flag)")
+                # Computed totals have no parsed CTF table/header to update.
+                header = self._tables.get(1, {}).get("_TableHeader")
+                if header and test_str in header[0]:
+                    column = header[0].index(test_str)
+                    header[0].pop(column)
+                    if len(header) > 1 and column < len(header[1]):
+                        header[1].pop(column)
                 # Remove the previous QCTest information in the header
                 if test_str in self.metadata['QCTest']:
                     del self.metadata['QCTest'][test_str]
@@ -1817,22 +1822,24 @@ class Total(fileParser):
 
     def to_xarray(self, model="gridded", grid=None, enhance=False, user_attributes=None):
         """
-        Helper function
+        Convert totals to an xarray Dataset without modifying the Total.
 
         Args:
             model (str, optional):
-                Create a 'tabular' (time) or 'gridded' (time, range, bearing) xarray dataset. Defaults to 'tabular'.
+                Only 'gridded' is supported, with dimensions (time, depth, lat, lon).
+            grid (str or GeoSeries, optional):
+                Grid file or points. Defaults to the unique coordinates in the total.
+            enhance, user_attributes:
+                Reserved arguments; currently unused.
 
         """
         # Make a copy so that the original total object is not altered by this function
         tcopy = copy.deepcopy(self)
 
-        #if model == "tabular":
-            #ds = rcopy._to_xarray_tabular(enhance)
         if model == "gridded":
             ds = tcopy._to_xarray_gridded(grid=grid)
         else:
-            raise ValueError("Please enter a valid data model type. Must be a string 'tabular' or 'gridded'")
+            raise ValueError("Only the 'gridded' data model is supported")
         return ds
 
     def _to_xarray_gridded(self, grid=None):
@@ -1872,7 +1879,7 @@ class Total(fileParser):
         if isinstance(grid, str) and Path(grid).exists():
             # load csv file containing the grid  (could be passed to function instead)
             logging.debug('{} - Reading grid file'.format(grid))
-            grid_file = pd.read_csv(grid, header=None, names=['lon', 'lat'], sep='\s+')
+            grid_file = pd.read_csv(grid, header=None, names=['lon', 'lat'], sep=r'\s+')
             logging.debug('{} - Grid file loaded'.format(grid))
 
             # Create a 2D grid
@@ -1892,29 +1899,18 @@ class Total(fileParser):
             # Create total grid from longitude and latitude
             [x, y] = np.meshgrid(lon_dim, lat_dim)
         else:
-            lon_min = min(self.data['LOND'])
-            lon_max = max(self.data['LOND'])
-            lat_min = min(self.data['LATD'])
-            lat_max = max(self.data['LATD'])
-            unique_longitudes = np.unique(self.data['LOND'])
-            if unique_longitudes.shape[0] > 1:
-                point1 = (unique_longitudes[0], unique_latitudes[0])
-                point2 = (unique_longitudes[1], unique_latitudes[0])
-                distance_geopy = distance.geodesic(point1, point2).km
-                grid_res = round(distance_geopy) * 1000
-            else:
-                grid_res = 6000
-            gridGS = createLonLatGridFromBB(lon_min, lon_max, lat_min, lat_max, grid_res)
-            # extract longitudes and latitude from grid GeoSeries and insert them into numpy arrays
-            lon_dim = np.unique(gridGS.x.to_numpy())
-            lat_dim = np.unique(gridGS.y.to_numpy())
+            # Preserve the source grid rather than inferring a new grid spacing.
+            lon_dim = np.unique(self.data['LOND'].to_numpy())
+            lat_dim = np.unique(self.data['LATD'].to_numpy())
             # manage antimeridian crossing
             lon_dim = np.concatenate((lon_dim[lon_dim >= 0], lon_dim[lon_dim < 0]))
             # Create total grid from longitude and latitude
             [x, y] = np.meshgrid(lon_dim, lat_dim)
 
         # mapping to convert 1d data into 2d gridded form. data_dict must be a dictionary.
-        x_ind, y_ind = gridded_index(x, y, self.data['LOND'], self.data['LATD'])
+        # Index the coordinate axes directly so single-row/column grids also work.
+        x_ind = np.array([np.argmin(np.abs(lon_dim - lon)) for lon in self.data['LOND']], dtype=int)
+        y_ind = np.array([np.argmin(np.abs(lat_dim - lat)) for lat in self.data['LATD']], dtype=int)
 
         # create dictionary containing variables from dataframe in the shape of total grid
         d = {key: np.tile(np.nan, x.shape) for key in self.data.keys()}

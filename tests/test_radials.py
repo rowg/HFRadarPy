@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 import sys
 import xarray as xr
+from joblib import parallel_config
 
 from hfradarpy.radials import Radial
 from hfradarpy.radials import concat as concatenate_radials
@@ -372,6 +373,27 @@ def test_miami_radial_tabular_nc():
         # Enhanced and non-enhanced files should not
         # be equal
         assert not xds1.identical(xds2)
+
+
+@pytest.mark.parametrize("input_kind", ["files", "objects", "mixed"])
+@pytest.mark.parametrize("enhance", [False, True])
+def test_parallel_concat_matches_serial(input_kind, enhance, monkeypatch):
+    files = [data_path / "radials" / "ruv" / "SEAB" / f"RDLi_SEAB_2019_01_01_{hour}00.ruv"
+             for hour in ("01", "00")]
+    radials = [Radial(f) for f in files]
+    inputs = {"files": files, "objects": radials, "mixed": [files[0], radials[1]]}[input_kind]
+    empty = Radial(files[0])
+    empty.data = empty.data.iloc[:0].copy()
+    inputs = [empty, *inputs]
+    expected = concatenate_radials(inputs, enhance=enhance)
+
+    monkeypatch.setattr("hfradarpy.radials.multiprocessing.cpu_count", lambda: 2)
+    with parallel_config(backend="threading"):
+        actual = concatenate_radials(inputs, enhance=enhance, parallel=True)
+
+    xr.testing.assert_identical(actual, expected)
+    assert actual.sizes["time"] == 2
+    assert actual.indexes["time"].is_monotonic_increasing
 
 
 class TestCombineRadials(unittest.TestCase):

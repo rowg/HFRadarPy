@@ -6,6 +6,7 @@ import numpy as np
 import numpy.testing as npt
 import pandas as pd
 import pytest
+import xarray as xr
 from shapely.geometry import Point
 from geopandas import GeoSeries
 
@@ -117,6 +118,52 @@ def _radial_components(u, v, head):
     """Project a (u, v) current onto radial headings (degrees true): VELO = u*sin(HEAD) + v*cos(HEAD)."""
     head = np.deg2rad(np.asarray(head, dtype=float))
     return u * np.sin(head) + v * np.cos(head)
+
+
+class TestTotalXarray:
+    @pytest.mark.parametrize("lon, lat", [
+        ([-74.0, -74.3, -74.1], [39.3, 39.0, 39.0]),
+        ([-74.0, -74.0], [39.0, 39.2]),
+        ([-74.0, -74.2], [39.0, 39.0]),
+        ([-74.0], [39.0]),
+        ([179.9, -179.9], [39.0, 39.2]),
+    ])
+    def test_default_grid_preserves_coordinates_and_values(self, lon, lat):
+        total = Total(grid=GeoSeries([Point(x, y) for x, y in zip(lon, lat)], crs="EPSG:4326"))
+        total.time = dt.datetime(2025, 1, 1)
+        total.data["VELU"] = np.arange(len(lon), dtype=float) + 1
+        total.data["VELV"] = -total.data["VELU"]
+        before = total.data.copy(deep=True)
+
+        ds = total.to_xarray()
+
+        assert dict(ds.sizes) == {"time": 1, "depth": 1, "lat": len(set(lat)), "lon": len(set(lon))}
+        assert pd.Timestamp(ds.time.values[0]) == total.time
+        assert ds.VELU.dims == ("time", "depth", "lat", "lon")
+        assert int(ds.VELU.notnull().sum()) == len(lon)
+        for i, (x, y) in enumerate(zip(lon, lat)):
+            cell = ds.sel(lon=x, lat=y)
+            assert cell.VELU.item() == i + 1
+            assert cell.VELV.item() == -(i + 1)
+        pd.testing.assert_frame_equal(total.data, before)
+
+    @pytest.mark.parametrize("grid_kind", ["geoseries", "file"])
+    def test_explicit_grid_keeps_unobserved_cells(self, grid_kind, tmp_path):
+        grid = GeoSeries([Point(x, y) for y in (39.0, 39.5) for x in (-74.5, -74.0)], crs="EPSG:4326")
+        total = Total(grid=grid)
+        total.time = dt.datetime(2025, 1, 1)
+        total.data["VELU"] = [1., 2., 3., 4.]
+        expected = total.to_xarray()
+        total.data = total.data.iloc[[0, 3]].copy()
+        expected["VELU"] = expected.VELU.where(expected.VELU.isin([1., 4.]))
+        if grid_kind == "file":
+            path = tmp_path / "grid.txt"
+            np.savetxt(path, np.column_stack((grid.x, grid.y)))
+            grid = str(path)
+
+        actual = total.to_xarray(grid=grid)
+
+        xr.testing.assert_allclose(actual, expected)
 
 
 class TestTotalLeastSquare:
@@ -571,6 +618,23 @@ class TestQCSiteContribution:
         t = _make_total(velo=np.ones(2), velu=np.ones(2), velv=np.zeros(2), head=np.full(2, 90.0))
         with pytest.raises(ValueError):
             t.qc_site_contribution(max_share=0.75)
+
+    @pytest.mark.parametrize("with_header", [False, True])
+    def test_recalculate_primary_flag_includes_new_test(self, with_header):
+        t = self._total()
+        t.qc_qartod_maximum_velocity()
+        t.qc_qartod_primary_flag()
+        assert (t.data.PRIM == 1).all()
+        if with_header:
+            t._tables[1] = {"_TableHeader": [["VELU", "PRIM", "Q303"], ["(cm/s)", "(flag)", "(flag)"]]}
+        t.qc_site_contribution(max_share=0.75)
+        t.qc_qartod_primary_flag(recalculate=True)
+        assert t.data.PRIM.tolist() == [1, 1, 4, 4, 1]
+        assert "SCON" in t.metadata["QCTest"]["PRIM"]
+        if with_header:
+            assert t._tables[1]["_TableHeader"] == [["VELU", "Q303"], ["(cm/s)", "(flag)"]]
+        t.qc_qartod_primary_flag(recalculate=True)
+        assert t.data.PRIM.tolist() == [1, 1, 4, 4, 1]
 
 
 class TestQCValidLocationPolygon:
