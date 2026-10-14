@@ -1,4 +1,5 @@
 """Tests for hfradarpy.totals module — Total class and supporting functions."""
+import datetime as dt
 from collections import OrderedDict
 
 import numpy as np
@@ -13,7 +14,7 @@ from pyproj import Geod
 from hfradarpy.calc import lonlat2km
 from hfradarpy.radials import Radial
 from hfradarpy.totals import Total, totalLeastSquare, totalUnWeightedLeastSquare, totalOI, combineRadials, \
-    makeTotalVectors_oi_vectorized, _stackRadials
+    makeTotalVectors_oi_vectorized, _stackRadials, _siteContribution
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +252,7 @@ def _current(lon, lat):
     return 10 + 20 * (lon + 74), -5 + 15 * (lat - 39.5)
 
 
-def _synthetic_radial(site, lat0, lon0, rng=None, uniform=None):
+def _synthetic_radial(site, lat0, lon0, rng=None, uniform=None, time=None):
     """Build an in-memory CODAR-like Radial (VELO positive toward the radar)."""
     ranges = np.arange(3, 63, 3.0)
     bearings = np.arange(0, 360, 5.0)
@@ -268,6 +269,7 @@ def _synthetic_radial(site, lat0, lon0, rng=None, uniform=None):
 
     r = Radial.__new__(Radial)
     r.is_wera = False
+    r.time = (time if time is not None else pd.Timestamp("2025-01-01")).to_pydatetime()
     r.data = pd.DataFrame({"LOND": lon, "LATD": lat, "VELO": velo, "HEAD": head, "BEAR": bb, "RNGE": rr,
                            "ETMP": np.abs(rng.normal(4, 1, velo.size)) if rng is not None else np.ones(velo.size)})
     r.data = r.data[keep].reset_index(drop=True)
@@ -389,6 +391,136 @@ class TestCombineRadialsEngines:
         with pytest.raises(ValueError):
             combineRadials(_radial_dataframe(), combine_grid, method="oi", engine="vectorized",
                            errvar=np.ones(3), sx=10.0, sy=10.0, **self.common)
+
+
+class TestSiteContribution:
+    def test_counts_shares_and_ratio(self):
+        # grid point 0: 9 radials from site 0 and 3 from site 1; point 1: 5 from site 0 only;
+        # point 2: 4, 4 and 2 radials from three sites; point 3: no radials
+        gi = np.array([0] * 12 + [1] * 5 + [2] * 10)
+        site = np.array([0] * 9 + [1] * 3 + [0] * 5 + [0] * 4 + [1] * 4 + [2] * 2)
+        rng = np.random.default_rng(3)
+        order = rng.permutation(gi.size)  # pairs come in any order
+        n_sites, ror, share = _siteContribution(gi[order], site[order], nsite=3, npts=4)
+
+        npt.assert_array_equal(n_sites, [2, 1, 3, 0])
+        npt.assert_allclose(ror[:3], [3.0, np.inf, 1.0])
+        npt.assert_allclose(share[:3], [0.75, 1.0, 0.4])
+        assert np.isnan(ror[3]) and np.isnan(share[3])
+
+
+class TestCombineRadialsWindow:
+    """Several radials per site, the time window (tempthreshold) and the site contribution columns."""
+    t0 = pd.Timestamp("2025-01-01 12:00")
+    common = dict(sRad=10000, gRes=6000, useLandMask=False, dropPoints=False)
+
+    def _window(self, currents):
+        """rDF with one radial per site for each (hour offset, uniform current) item."""
+        radials, sites = [], []
+        for hours, uv in currents:
+            for s, (la, lo) in _SITES.items():
+                radials.append(_synthetic_radial(s, la, lo, uniform=uv, time=self.t0 + pd.Timedelta(hours=hours)))
+                sites.append(s)
+        return pd.DataFrame({"Radial": radials}, index=sites)
+
+    def test_repeated_site_codes_count_as_one_site(self, combine_grid):
+        single = self._window([(0, (12.0, -7.0))])
+        double = self._window([(0, (12.0, -7.0)), (1, (12.0, -7.0))])
+        one, _ = combineRadials(single, combine_grid, tStp=self.t0, method="uwls", engine="vectorized", **self.common)
+        two, _ = combineRadials(double, combine_grid, tStp=self.t0, method="uwls", engine="vectorized", **self.common)
+
+        valid = one.data["VELU"].notna()
+        npt.assert_array_equal(valid, two.data["VELU"].notna())
+        npt.assert_array_equal(two.data.loc[valid, "NSIT"], one.data.loc[valid, "NSIT"])
+        npt.assert_array_equal(two.data.loc[valid, "NRAD"], 2 * one.data.loc[valid, "NRAD"])
+        npt.assert_allclose(two.data.loc[valid, "VELU"].astype(float), 12.0, atol=1e-8)
+        assert two.site_source["Name"].tolist() == list(_SITES)
+
+    def test_one_site_at_several_times_is_not_enough(self, combine_grid):
+        rdf = self._window([(0, (12.0, -7.0)), (1, (12.0, -7.0))])
+        rdf = rdf[rdf.index == "SITA"]
+        tot, warn = combineRadials(rdf, combine_grid, tStp=self.t0, method="uwls", engine="vectorized", **self.common)
+        assert warn == "No combination performed: not enough contributing radial sites"
+
+    @pytest.mark.parametrize("window", [pd.Timedelta(hours=1), dt.timedelta(hours=1), 1])
+    def test_tempthreshold_keeps_radials_within_the_window(self, combine_grid, window):
+        # Radials 3 hours away describe a different current and must be left out
+        rdf = self._window([(-1, (12.0, -7.0)), (0, (12.0, -7.0)), (1, (12.0, -7.0)), (3, (40.0, 30.0))])
+        tot, _ = combineRadials(rdf, combine_grid, tStp=self.t0, method="uwls", engine="vectorized",
+                                tempthreshold=window, **self.common)
+        ref, _ = combineRadials(self._window([(0, (12.0, -7.0))]), combine_grid, tStp=self.t0, method="uwls",
+                                engine="vectorized", **self.common)
+        valid = tot.data["VELU"].notna()
+        assert valid.sum() > 20
+        npt.assert_allclose(tot.data.loc[valid, "VELU"].astype(float), 12.0, atol=1e-8)
+        npt.assert_allclose(tot.data.loc[valid, "VELV"].astype(float), -7.0, atol=1e-8)
+        npt.assert_array_equal(tot.data.loc[valid, "NRAD"], 3 * ref.data.loc[valid, "NRAD"])
+
+    def test_without_tempthreshold_every_radial_is_used(self, combine_grid):
+        rdf = self._window([(0, (12.0, -7.0)), (3, (40.0, 30.0))])
+        tot, _ = combineRadials(rdf, combine_grid, tStp=self.t0, method="uwls", engine="vectorized", **self.common)
+        valid = tot.data["VELU"].notna()
+        assert not np.allclose(tot.data.loc[valid, "VELU"].astype(float), 12.0)
+
+    @pytest.mark.parametrize("method, kwargs", [("uwls", {}), ("oi", dict(mdlvar=625, errvar=100, sx=10.0, sy=10.0))])
+    def test_site_contribution_columns(self, combine_grid, method, kwargs):
+        rdf = _radial_dataframe(np.random.default_rng(0))
+        tot, _ = combineRadials(rdf, combine_grid, tStp=self.t0, method=method, engine="vectorized", **self.common, **kwargs)
+        d = tot.data[tot.data["VELU"].notna()]
+        assert len(d) > 20
+        assert ((d["NSIT"] >= 2) & (d["NSIT"] <= len(_SITES))).all()
+        assert (d["ROR"] >= 1).all()
+        assert ((d["MSFR"] >= 1 / d["NSIT"]) & (d["MSFR"] < 1)).all()
+        assert tot.data.loc[tot.data["VELU"].isna(), ["NSIT", "ROR", "MSFR"]].isna().all().all()
+
+    def test_oi_search_factor_widens_the_search(self, combine_grid):
+        rdf = _radial_dataframe(np.random.default_rng(0))
+        oi = dict(method="oi", engine="vectorized", mdlvar=625, errvar=100, sx=10.0, sy=10.0)
+        narrow, _ = combineRadials(rdf, combine_grid, tStp=self.t0, oi_search_factor=1, **oi, **self.common)
+        default, _ = combineRadials(rdf, combine_grid, tStp=self.t0, **oi, **self.common)
+        both = narrow.data["VELU"].notna() & default.data["VELU"].notna()
+        assert both.sum() > 20
+        assert (narrow.data.loc[both, "NRAD"] < default.data.loc[both, "NRAD"]).all()
+
+    def test_loop_engine_rejects_new_options(self, combine_grid):
+        rdf = self._window([(0, (12.0, -7.0)), (1, (12.0, -7.0))])
+        with pytest.raises(ValueError):
+            combineRadials(rdf, combine_grid, tStp=self.t0, method="uwls", engine="loop", **self.common)
+        with pytest.raises(ValueError):
+            combineRadials(_radial_dataframe(), combine_grid, tStp=self.t0, method="oi", engine="loop",
+                           oi_search_factor=1, **self.common)
+
+
+class TestQCSiteContribution:
+    def _total(self):
+        t = _make_total(velo=np.ones(5), velu=np.ones(5), velv=np.zeros(5), head=np.full(5, 90.0))
+        t.data["ROR"] = [1.0, 3.0, 5.0, np.inf, np.nan]
+        t.data["MSFR"] = [0.5, 0.75, 0.83, 1.0, np.nan]
+        return t
+
+    def test_max_share(self):
+        t = self._total()
+        t.qc_site_contribution(max_share=0.75)
+        assert t.data["SCON"].tolist() == [1, 1, 4, 4, 2]
+
+    def test_max_ror(self):
+        t = self._total()
+        t.qc_site_contribution(max_ror=4)
+        assert t.data["SCON"].tolist() == [1, 1, 4, 4, 2]
+
+    def test_metadata_and_primary_flag(self):
+        t = self._total()
+        t.qc_site_contribution(max_share=0.75)
+        assert "qc_site_contribution (SCON)" in t.metadata["QCTest"]["SCON"]
+        t.qc_qartod_primary_flag()
+        assert t.data["PRIM"].tolist() == [1, 1, 4, 4, 1]
+
+    def test_requires_a_threshold_and_columns(self):
+        with pytest.raises(ValueError):
+            self._total().qc_site_contribution()
+        t = _make_total(velo=np.ones(2), velu=np.ones(2), velv=np.zeros(2), head=np.full(2, 90.0))
+        with pytest.raises(ValueError):
+            t.qc_site_contribution(max_share=0.75)
 
 
 # ---------------------------------------------------------------------------

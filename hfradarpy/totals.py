@@ -531,13 +531,15 @@ def _stackRadials(rDF):
         rDF: DataFrame containing input Radials; indices must be the site codes.
 
     OUTPUT:
-        rad: dictionary with LOND, LATD, VELO, HEAD and STD arrays, the SITE index (row of rDF)
-             of each radial bin and the number of sites (nsite).
+        rad: dictionary with LOND, LATD, VELO, HEAD and STD arrays, the SITE index of each radial bin
+             and the number of sites (nsite). Rows of rDF with the same site code (for example radials
+             from neighboring time steps) share one SITE index, so they count as one contributing site.
              STD is taken from ETMP or sqrt(HCSS) as in makeTotalVector (NaN when neither exists).
              Radial bins with non-finite coordinates are dropped.
     """
+    siteIndex, siteCodes = pd.factorize(rDF.index)
     cols = {'LOND': [], 'LATD': [], 'VELO': [], 'HEAD': [], 'STD': [], 'SITE': []}
-    for k, rad in enumerate(rDF['Radial']):
+    for k, rad in zip(siteIndex, rDF['Radial']):
         d = rad.data
         cols['LOND'].append(d['LOND'].to_numpy(dtype=float))
         cols['LATD'].append(d['LATD'].to_numpy(dtype=float))
@@ -555,7 +557,7 @@ def _stackRadials(rDF):
     rad['SITE'] = rad['SITE'].astype(np.int64)
     finite = np.isfinite(rad['LOND']) & np.isfinite(rad['LATD'])
     rad = {key: val[finite] for key, val in rad.items()}
-    rad['nsite'] = len(rDF)
+    rad['nsite'] = max(len(siteCodes), 1)
     return rad
 
 
@@ -581,17 +583,62 @@ def _findRadialPairs(gridLon, gridLat, rad, radius_km):
     return sdm['i'].astype(np.int64), sdm['j'].astype(np.int64)
 
 
-def _countContributingSites(gi, site, nsite, npts):
+def _siteContribution(gi, site, nsite, npts):
     """
-    Number of distinct radial sites contributing to each grid point.
+    How the radials of each grid point are shared among the contributing radial sites.
+
+    INPUT:
+        gi: grid point index of each (grid point, radial bin) pair
+        site: site index of the radial bin of each pair
+        nsite: number of sites
+        npts: number of grid points
+
+    OUTPUT:
+        nSites: number of distinct sites contributing to each grid point
+        ror: ratio of overlapping radial velocities (Fang et al. 2015, eq. 19): the number of radials from
+             the largest contributing site divided by the number from the second largest (inf with one site)
+        share: fraction of the radials that come from the largest contributing site (0-1)
     """
-    keys = np.unique(gi * nsite + site)
-    return np.bincount(keys // nsite, minlength=npts)
+    nSites = np.zeros(npts, dtype=np.int64)
+    ror = np.full(npts, np.nan)
+    share = np.full(npts, np.nan)
+    if gi.size == 0:
+        return nSites, ror, share
+
+    keys, counts = np.unique(gi * nsite + site, return_counts=True)
+    point = keys // nsite
+    nSites = np.bincount(point, minlength=npts)
+
+    # Order each grid point's sites by decreasing number of radials
+    order = np.lexsort((-counts, point))
+    point, counts = point[order], counts[order]
+    first = np.flatnonzero(np.r_[True, point[1:] != point[:-1]])
+    top1 = counts[first]
+    hasSecond = (first + 1 < point.size) & (np.r_[point, -1][first + 1] == point[first])
+    top2 = np.where(hasSecond, np.r_[counts, 0][first + 1], 0)
+
+    total = np.bincount(point, weights=counts, minlength=npts)
+    pts = point[first]
+    with np.errstate(divide='ignore'):
+        ror[pts] = np.where(top2 > 0, top1 / np.maximum(top2, 1), np.inf)
+    share[pts] = top1 / total[pts]
+    return nSites, ror, share
+
+
+_TOTAL_COLUMNS = ['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']
+# Site contribution columns added by the vectorized engine
+_SITE_COLUMNS = ['NSIT', 'ROR', 'MSFR']
 
 
 def _emptyTotData(npts):
-    return pd.DataFrame(np.nan, index=range(npts),
-                        columns=['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD'])
+    return pd.DataFrame(np.nan, index=range(npts), columns=_TOTAL_COLUMNS + _SITE_COLUMNS)
+
+
+def _setSiteColumns(totData, good, nSites, ror, share):
+    """Fill the site contribution columns for grid points with a total vector."""
+    totData.loc[good, 'NSIT'] = nSites[good]
+    totData.loc[good, 'ROR'] = ror[good]
+    totData.loc[good, 'MSFR'] = share[good]
 
 
 def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls', minContrSites=2, minContrRads=3,
@@ -615,7 +662,8 @@ def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls'
         distance: 'geodesic' (default) or 'flat' (HFRProgs lonlat2dist), as in radBinsInSearchRadius
 
     OUTPUT:
-        totData: DataFrame (one row per grid point) with VELU, VELV, VELO, HEAD, UQAL, VQAL, CQAL, GDOP, NRAD
+        totData: DataFrame (one row per grid point) with VELU, VELV, VELO, HEAD, UQAL, VQAL, CQAL, GDOP, NRAD,
+                 and the site contribution columns NSIT, ROR and MSFR (see _siteContribution)
     """
     npts = len(gridLon)
     totData = _emptyTotData(npts)
@@ -655,7 +703,7 @@ def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls'
     c, s, velo = np.cos(head), np.sin(head), rad['VELO'][ri]
 
     nRad = np.bincount(gi, minlength=npts)
-    nSites = _countContributingSites(gi, rad['SITE'][ri], rad['nsite'], npts)
+    nSites, ror, share = _siteContribution(gi, rad['SITE'][ri], rad['nsite'], npts)
 
     # Normal equations: A'A = [[Scc, Scs], [Scs, Sss]], A'b = [Scv, Ssv]
     Scc, Scs, Sss = accumulate(w * c * c), accumulate(w * c * s), accumulate(w * s * s)
@@ -692,12 +740,14 @@ def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls'
     totData.loc[good, 'CQAL'] = C01[good]
     totData.loc[good, 'GDOP'] = gdop[good]
     totData.loc[good, 'NRAD'] = nRad[good]
+    _setSiteColumns(totData, good, nSites, ror, share)
 
     return totData
 
 
 def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx=1, sy=1, minContrRads=3,
-                                   minContrSites=2, oi_option='exponential', max_batch_elements=1e5):
+                                   minContrSites=2, oi_option='exponential', max_batch_elements=1e5,
+                                   search_factor=2):
     """
     Vectorized equivalent of applying makeTotalVector_oi to every grid point.
 
@@ -717,9 +767,12 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
         oi_option: 'exponential' or 'gaussian'
         max_batch_elements: maximum number of matrix elements solved in one batch. Small batches stay in the
                             CPU cache, which is faster than solving everything at once (default 1e5)
+        search_factor: radials are used when sqrt((dx/sx)^2 + (dy/sy)^2) < search_factor (default 2, as in
+                       radBinsInSearchRadius)
 
     OUTPUT:
-        totData: DataFrame (one row per grid point) with VELU, VELV, VELO, HEAD, UQAL, VQAL, CQAL, GDOP, NRAD
+        totData: DataFrame (one row per grid point) with VELU, VELV, VELO, HEAD, UQAL, VQAL, CQAL, GDOP, NRAD,
+                 and the site contribution columns NSIT, ROR and MSFR (see _siteContribution)
     """
     if not np.isscalar(errvar):
         raise ValueError('The vectorized OI engine only supports a constant (scalar) errvar')
@@ -729,8 +782,8 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
     npts = len(gridLon)
     totData = _emptyTotData(npts)
 
-    # Same radius of influence as radBinsInSearchRadius(oi=True)
-    normr = 2
+    # Radius of influence (radBinsInSearchRadius(oi=True) uses 2)
+    normr = search_factor
     gi, ri = _findRadialPairs(gridLon, gridLat, rad, normr * max(sx, sy) * 1.1)
     if gi.size:
         dx, dy = lonlat2km(gridLon[gi], gridLat[gi], rad['LOND'][ri], rad['LATD'][ri])
@@ -743,7 +796,7 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
     order = np.argsort(gi, kind='stable')
     gi, ri = gi[order], ri[order]
     nRad = np.bincount(gi, minlength=npts)
-    nSites = _countContributingSites(gi, rad['SITE'][ri], rad['nsite'], npts)
+    nSites, ror, share = _siteContribution(gi, rad['SITE'][ri], rad['nsite'], npts)
     start = np.concatenate(([0], np.cumsum(nRad)[:-1]))
 
     # Solve points with a similar number of radials together to minimize padding
@@ -821,18 +874,21 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
     totData.loc[good, 'CQAL'] = result[good, 4]  # directional info of u and v (UV covariance)
     totData.loc[good, 'GDOP'] = np.sqrt(result[good, 2] ** 2 + result[good, 3] ** 2)  # OI Total Errors
     totData.loc[good, 'NRAD'] = nRad[good]
+    _setSiteColumns(totData, good, nSites, ror, share)
 
     return totData
 
 
 def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True, runParallel=True, engine='loop',
-                  distance='geodesic'):
+                  distance='geodesic', oi_search_factor=2):
     """
     This function generataes total vectors from radial measurements using the
     weighted Least Square method for combination.
 
     INPUT:
-        rDF: DataFrame containing input Radials; indices must be the site codes.
+        rDF: DataFrame containing input Radials; indices must be the site codes. With engine='vectorized' a
+            site code may appear on several rows (for example radials from neighboring time steps); those
+            radials count as one contributing site.
         gridGS: GeoPandas GeoSeries containing the longitude/latitude pairs of all
             the points in the grid
         sRad: search radius for combination in meters.
@@ -846,7 +902,10 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
         sx: x decorrelation length scale (for OI method only)
         sy: y decorrelation length scale (for OI method only)
         oi_weighting: either 'gaussian' or 'exponential' (for OI method only, default to 'exponential')
-        tempthreshold: currently not used, was an option in hfrprogs to allow for a window of timestamps for radial contributions
+        tempthreshold: time window for radial contributions (datetime.timedelta, pandas.Timedelta, or a number of
+                       hours). When set, only radials whose time is within tempthreshold of tStp are used. Pass
+                       radials from several time steps in rDF and set tempthreshold=1 hour to combine the radials
+                       from t-1, t and t+1 (Nwankwo et al. 2026). Default None uses every radial in rDF.
         useLandMask: whether to mask out vectors on land (default to True)
         dropPoints: whether to drop grid points without total vectors (default to True)
         runParallel: run the OI combination in parallel with joblib (engine='loop' only, default to True)
@@ -860,6 +919,12 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
                   makeTotals (lonlat2dist), to select the same radials as the MATLAB toolbox; the two differ
                   only for radials within metres of the search radius. method='oi' always uses the HFRProgs
                   makeTotalsOI rule.
+        oi_search_factor: OI uses radials with sqrt((dx/sx)^2 + (dy/sy)^2) < oi_search_factor (default 2, the
+                          HFRProgs makeTotalsOI rule). Values other than 2 need engine='vectorized'.
+
+    With engine='vectorized' the Total also gets site contribution columns: NSIT (number of contributing sites),
+    ROR (ratio of overlapping radial velocities, Fang et al. 2015) and MSFR (share of the radials coming from the
+    largest contributing site). See Total.qc_site_contribution.
 
     OUTPUT:
         Tcomb: Total object generated by the combination
@@ -869,6 +934,17 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
         raise ValueError(f"Invalid engine '{engine}': must be 'loop' or 'vectorized'")
     if distance not in ('geodesic', 'flat'):
         raise ValueError(f"Invalid distance '{distance}': must be 'geodesic' or 'flat'")
+    if engine == 'loop' and rDF.index.has_duplicates:
+        raise ValueError("Several radials per site (repeated site codes in rDF) need engine='vectorized'")
+    if engine == 'loop' and oi_search_factor != 2:
+        raise ValueError("oi_search_factor other than 2 needs engine='vectorized'")
+
+    if tempthreshold is not None and not rDF.empty:
+        # Only keep radials within the time window around tStp
+        if not isinstance(tempthreshold, (dt.timedelta, pd.Timedelta)):
+            tempthreshold = pd.Timedelta(hours=tempthreshold)
+        radTimes = pd.to_datetime(pd.Series([r.time for r in rDF['Radial']], index=rDF.index))
+        rDF = rDF[(radTimes - pd.Timestamp(tStp)).abs() <= tempthreshold]
 
     # Initialize empty warning string
     warn = ''
@@ -877,10 +953,17 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
     Tcomb = Total(grid=gridGS)
 
     # Check if there are enough contributing radial sites
-    if rDF.size >= minContrSites:
+    if rDF.index.nunique() >= minContrSites:
+        # One site_source row per site: when a site has several radials, describe the one closest to tStp
+        siteRadials = rDF
+        if rDF.index.has_duplicates:
+            offset = [abs(pd.Timestamp(r.time) - pd.Timestamp(tStp)) for r in rDF['Radial']]
+            siteRadials = rDF.assign(_offset=offset).sort_values('_offset', kind='stable')
+            siteRadials = siteRadials[~siteRadials.index.duplicated()].drop(columns='_offset')
+
         # Fill site_source DataFrame with contributing radials information
         siteNum = 0  # initialization of site number
-        for Rindex, Rrow in rDF.iterrows():
+        for Rindex, Rrow in siteRadials.iterrows():
             siteNum = siteNum + 1
             rad = Rrow['Radial']
             thisRadial = pd.DataFrame(index=[Rindex],
@@ -949,7 +1032,8 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
             elif method == 'oi':
                 totData = makeTotalVectors_oi_vectorized(radArrays, gridLon, gridLat, mdlvar=mdlvar, errvar=errvar,
                                                          sx=sx, sy=sy, minContrRads=minContrRads,
-                                                         minContrSites=minContrSites, oi_option=oi_option)
+                                                         minContrSites=minContrSites, oi_option=oi_option,
+                                                         search_factor=oi_search_factor)
             else:
                 warn = 'No combination performed: not a valid combination method'
                 return Tcomb, warn
@@ -1010,9 +1094,13 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
             else:
                 warn = 'No combination performed: not a valid combination method'
 
-        # Assign column names to the combination DataFrame
-        totData.columns = ['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']
-        Tcomb.data[['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']] = totData
+        if engine == 'vectorized':
+            # The vectorized solvers also return the site contribution columns
+            Tcomb.data[list(totData.columns)] = totData
+        else:
+            # Assign column names to the combination DataFrame
+            totData.columns = _TOTAL_COLUMNS
+            Tcomb.data[_TOTAL_COLUMNS] = totData
 
         if useLandMask:
             # Mask out vectors on land
@@ -2626,7 +2714,7 @@ class Total(fileParser):
                                             + 'Threshold=[' + f'GDOP threshold={max_GDOP}]'
         self.metadata['QCTest'][
             test_str] = f"qc_qartod_gdop ({test_str}) - Test applies to each row. Thresholds=" \
-                        + "[ " + f"max={str(max_GDOP)} (cm/s) " \
+                        + "[ " + f"max={str(max_GDOP)} " \
                         + f"]: See results in column {test_str} below"
 
     def qc_qartod_u_uncertainty(self, max_Uerr=0.6, recalculate=False):
@@ -2658,7 +2746,7 @@ class Total(fileParser):
 
         self.metadata['QCTest'][
             test_str] = f"qc_qartod_u_uncertainty ({test_str}) - Test applies to each row. Thresholds=" \
-                        + "[ " + f"max={str(max_Uerr)} (cm/s) " \
+                        + "[ " + f"max={str(max_Uerr)} " \
                         + f"]: See results in column {test_str} below"
 
     def qc_qartod_v_uncertainty(self, max_Verr=0.6, recalculate=False):
@@ -2692,7 +2780,58 @@ class Total(fileParser):
                                             + "Threshold=[" + f"Threshold={max_Verr}]"
         self.metadata['QCTest'][
             test_str] = f"qc_qartod_v_uncertainty ({test_str}) - Test applies to each row. Thresholds=" \
-                        + "[ " + f"max={str(max_Verr)} (cm/s) " \
+                        + "[ " + f"max={str(max_Verr)} " \
+                        + f"]: See results in column {test_str} below"
+
+    def qc_site_contribution(self, max_ror=None, max_share=None, recalculate=False):
+        """
+        Site Contribution Test
+
+        Flags total vectors whose radials come mostly from one site, which can bias the estimate
+        (Fang et al. 2015). Uses the site contribution columns written by combineRadials(engine='vectorized'):
+            ROR: ratio of overlapping radial velocities, the number of radials from the largest contributing
+                 site divided by the number from the second largest (Fang et al. 2015, eq. 19; ROR < 4 was
+                 found reliable)
+            MSFR: share of the radials coming from the largest contributing site (Nwankwo et al. 2026 required
+                  no site to contribute more than 75 %)
+
+        Vectors with ROR > max_ror or MSFR > max_share get a "bad data" flag (4), the others a "good data"
+        flag (1). Vectors without site contribution values are flagged "not evaluated" (2).
+
+        INPUTS:
+            max_ror: maximum allowed ROR (e.g. 4), or None to skip this criterion
+            max_share: maximum allowed MSFR (e.g. 0.75), or None to skip this criterion
+        """
+        test_str = 'SCON'
+
+        if max_ror is None and max_share is None:
+            raise ValueError('Set max_ror and/or max_share')
+        missing = [c for c, limit in (('ROR', max_ror), ('MSFR', max_share)) if limit is not None and c not in self.data]
+        if missing:
+            raise ValueError(f"Missing column(s) {', '.join(missing)}: combine the radials with engine='vectorized'")
+
+        #check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
+        self.data.loc[:, test_str] = 1
+
+        evaluated = pd.Series(True, index=self.data.index)
+        fail = pd.Series(False, index=self.data.index)
+        if max_ror is not None:
+            evaluated &= self.data['ROR'].notna()
+            fail |= self.data['ROR'] > max_ror
+        if max_share is not None:
+            evaluated &= self.data['MSFR'].notna()
+            fail |= self.data['MSFR'] > max_share
+
+        self.data.loc[~evaluated, test_str] = 2
+        self.data.loc[evaluated & fail, test_str] = 4
+
+        self.metadata['QCTest'][
+            test_str] = f"qc_site_contribution ({test_str}) - Test applies to each row. Thresholds=" \
+                        + "[ " + f"max_ror={str(max_ror)} max_share={str(max_share)} " \
                         + f"]: See results in column {test_str} below"
 
 
