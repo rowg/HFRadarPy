@@ -1,0 +1,51 @@
+{
+  "_comment": "Local overrides for yucatan_realtime_testing, equivalent to the overrides in realtime_yucatan_long_range.m (UWLS only, 15 km search radius, local paths). The driver options match that MATLAB driver (QC305 polygon is the valid area; vectors failing QC305 are only flagged).",
+  "conf": {
+    "Radials": {
+      "BaseDir": "/Users/mikesmith/Desktop/mastr_data/radials/clean/",
+      "MonthFlag": false
+    },
+    "Totals": {
+      "GridFile": "/Users/mikesmith/Documents/MATLAB/processing_realtime/ugos/grid_files/ugos_grid_yucatan.csv",
+      "UWLS": {"Process": true, "spatthresh": 15, "BaseDir": "/Users/mikesmith/Desktop/realtime_totals/yucatan/lsq/"},
+      "OI": {"Process": false, "sx": 6, "sy": 6, "BaseDir": "/Users/mikesmith/Desktop/realtime_totals/yucatan/oi/"}
+    },
+    "QC": {
+      "QC305_MaskFile": "/Users/mikesmith/Documents/MATLAB/maracoos/mask_files/Yucatan_6kmMask.txt"
+    }
+  },
+  "driver": {
+    "qc305_polygon": "water",
+    "qc305_remove_vectors": false,
+    "netcdf_attributes": {
+      "title": "Yucatan 6km Sea Surface Currents",
+      "naming_authority": "edu.rutgers.marine.rucool",
+      "comment": "Site maintained by the Texas A&M University (TAMU)). For oi_* global attribute explanations, see references attribute",
+      "acknowledgment": "This data is provided by TAMU as part of the \"Understand Gulf Ocean Systems (UGOS)\" project. Funding is provided by the National Academies of Sciences, Engineering, and Medicine (NASEM).",
+      "standard_name_vocabulary": "CF Standard Name Table v41",
+      "creator_name": "Michael Smith",
+      "creator_email": "michaesm@marine.rutgers.edu",
+      "creator_url": "rucool.marine.rutgers.edu",
+      "creator_type": "person",
+      "creator_institution": "Center for Ocean Observing Leadership, Rutgers University",
+      "institution": "The Geochemical and Environmental Research Group, Texas A&M University",
+      "project": "Understanding Gulf Ocean Systems - Gulf Consortium for Offshore Risk Reduction Engaging Stakeholders (GulfCORES) - High Frequency Radar Sea Surface Current Mapping",
+      "sea_name": "Straits of Yucatán",
+      "contributor_name": "Anthony Knap, Steve Dimarco, Andrew Dancer, Woody Lee, Michael Smith",
+      "contributor_role": "Principal Investigator, Principal Investigator, Instrument Specialist, Data Distribution, Data QA/QC",
+      "platform": "UGOS HF Radar 5MHz Network",
+      "instrument": "CODAR SeaSonde High Frequency Radar - 5MHz",
+      "references": "https://www.nationalacademies.org/gulf/fellowships-and-grants/understanding-gulf-ocean-systems",
+      "summary": "Radial Vectors quality controlled using hfradarpy Python toolbox",
+      "ncei_template_version": "NCEI_NetCDF_Grid_Template_v2.0",
+      "history": "Hourly codar radial data combined into one hourly file containing vectors.",
+      "cdm_data_type": "Grid",
+      "source": "CODAR SeaSonde Surface Current Mapping Device",
+      "processing_level": "Level 3",
+      "keywords": "Environmental Advisories > Marine Advisories > Marine Weather/Forecast, Oceans > Coastal Processes, Oceans > Ocean Circulation, Oceans > Ocean Waves, Oceans > Ocean Winds, Oceans > Ocean Tides, Spectral/Engineering > Radar",
+      "publisher_name": "NOAA National Centers for Environmental Information",
+      "publisher_email": "ncei.info@noaa.gov",
+      "publisher_url": "www.ncei.noaa.gov"
+    }
+  }
+}
