@@ -1,7 +1,8 @@
-=====
+:orphan:
+
 Usage
 =====
 
-To use HFRadarPy in a project::
-
-    import hfradarpy
+Usage documentation is now organized by task. Begin with
+:doc:`getting_started`, then continue with :doc:`radials`,
+:doc:`quality_control`, or :doc:`totals`.
