@@ -12,7 +12,8 @@ from pyproj import Geod
 
 from hfradarpy.calc import lonlat2km
 from hfradarpy.radials import Radial
-from hfradarpy.totals import Total, totalLeastSquare, totalOI, combineRadials, makeTotalVectors_oi_vectorized, _stackRadials
+from hfradarpy.totals import Total, totalLeastSquare, totalUnWeightedLeastSquare, totalOI, combineRadials, \
+    makeTotalVectors_oi_vectorized, _stackRadials
 
 
 # ---------------------------------------------------------------------------
@@ -111,64 +112,83 @@ class TestInitializeGrid:
 # totalLeastSquare
 # ---------------------------------------------------------------------------
 
+def _radial_components(u, v, head):
+    """Project a (u, v) current onto radial headings (degrees true): VELO = u*sin(HEAD) + v*cos(HEAD)."""
+    head = np.deg2rad(np.asarray(head, dtype=float))
+    return u * np.sin(head) + v * np.cos(head)
+
+
 class TestTotalLeastSquare:
     def test_orthogonal_radials(self):
-        """Two radials from north and east should give correct u and v."""
-        # Radial from north (HEAD=0°): measures north-south component
-        # Radial from east (HEAD=90°): measures east-west component
-        df = pd.DataFrame({
-            "VELO": [0.5, 0.3],       # velocities
-            "HEAD": [0.0, 90.0],       # bearings (true convention)
-            "STD": [1.0, 1.0],         # uniform weights
-        })
+        """A radial heading north measures v and one heading east measures u."""
+        df = pd.DataFrame({"VELO": [0.5, 0.3], "HEAD": [0.0, 90.0], "STD": [1.0, 1.0]})
         u, v, C, Cgdop = totalLeastSquare(df)
-        # With orthogonal radials and unit weights, u ≈ radial at 90°, v ≈ radial at 0°
-        assert not np.isnan(u)
-        assert not np.isnan(v)
-        assert isinstance(C, np.ndarray)
-        assert isinstance(Cgdop, np.ndarray)
-        assert C.shape == (2, 2)
+        assert u == pytest.approx(0.3, abs=1e-12)
+        assert v == pytest.approx(0.5, abs=1e-12)
+        npt.assert_allclose(C, np.eye(2), atol=1e-12)
+        npt.assert_allclose(Cgdop, np.eye(2), atol=1e-12)
 
-    def test_three_radials(self):
-        """Three radials at 120° intervals should resolve u and v."""
-        df = pd.DataFrame({
-            "VELO": [0.4, 0.2, -0.1],
-            "HEAD": [0.0, 120.0, 240.0],
-            "STD": [1.0, 1.0, 1.0],
-        })
+    def test_recovers_known_current(self):
+        """Noise-free radials from any non-degenerate geometry recover u and v exactly, whatever the weights."""
+        head = np.array([0.0, 90.0, 200.0, 300.0])
+        std = np.array([1.0, 2.0, 0.5, 1.0])
+        df = pd.DataFrame({"VELO": _radial_components(0.3, -0.2, head), "HEAD": head, "STD": std})
         u, v, C, Cgdop = totalLeastSquare(df)
-        assert not np.isnan(u)
-        assert not np.isnan(v)
+        assert u == pytest.approx(0.3, abs=1e-12)
+        assert v == pytest.approx(-0.2, abs=1e-12)
+
+        # Covariances computed independently from the design matrix rows [sin(HEAD), cos(HEAD)]
+        G = np.column_stack((np.sin(np.deg2rad(head)), np.cos(np.deg2rad(head))))
+        npt.assert_allclose(C, np.linalg.inv(G.T @ np.diag(1 / std ** 2) @ G), atol=1e-12)
+        npt.assert_allclose(Cgdop, np.linalg.inv(G.T @ G), atol=1e-12)
+
+    def test_covariance_scales_with_std_but_gdop_does_not(self):
+        df = pd.DataFrame({"VELO": [0.5, 0.3], "HEAD": [0.0, 90.0], "STD": [2.0, 2.0]})
+        _, _, C, Cgdop = totalLeastSquare(df)
+        npt.assert_allclose(C, 4 * np.eye(2), atol=1e-12)
+        npt.assert_allclose(Cgdop, np.eye(2), atol=1e-12)
+
+    @pytest.mark.parametrize("std, expected_v", [
+        ([1.0, 1.0, 1.0], 0.5),           # equal weights: v is the plain mean of 1.0 and 0.0
+        ([0.1, 1.0, 1.0], 100 / 101),     # weights 1/STD^2 = 100 and 1: v is the weighted mean
+    ])
+    def test_weights_are_inverse_variance(self, std, expected_v):
+        """Two conflicting northward radials are averaged with weights 1/STD^2."""
+        df = pd.DataFrame({"VELO": [1.0, 0.0, 0.0], "HEAD": [0.0, 0.0, 90.0], "STD": std})
+        u, v, _, _ = totalLeastSquare(df)
+        assert u == pytest.approx(0.0, abs=1e-12)
+        assert v == pytest.approx(expected_v, abs=1e-12)
 
     def test_colinear_radials_return_nan(self):
         """Two parallel radials (same direction) can't resolve u and v."""
-        df = pd.DataFrame({
-            "VELO": [0.5, 0.3],
-            "HEAD": [0.0, 0.0],
-            "STD": [1.0, 1.0],
-        })
+        df = pd.DataFrame({"VELO": [0.5, 0.3], "HEAD": [0.0, 0.0], "STD": [1.0, 1.0]})
         u, v, C, Cgdop = totalLeastSquare(df)
-        # The design matrix is singular, so the result should be NaN
         assert np.isnan(u)
         assert np.isnan(v)
 
-    def test_weighted_least_squares(self):
-        """Higher weight on one radial should bias the result."""
-        df_equal = pd.DataFrame({
-            "VELO": [1.0, 0.0],
-            "HEAD": [0.0, 90.0],
-            "STD": [1.0, 1.0],
-        })
-        df_biased = pd.DataFrame({
-            "VELO": [1.0, 0.0],
-            "HEAD": [0.0, 90.0],
-            "STD": [0.1, 1.0],  # much higher weight on first radial
-        })
-        u_eq, v_eq, _, _ = totalLeastSquare(df_equal)
-        u_bi, v_bi, _, _ = totalLeastSquare(df_biased)
-        # Both should produce valid results
-        assert not np.isnan(u_eq)
-        assert not np.isnan(u_bi)
+
+class TestTotalUnWeightedLeastSquare:
+    def test_recovers_known_current(self):
+        head = np.array([10.0, 100.0, 230.0])
+        df = pd.DataFrame({"VELO": _radial_components(25.0, -12.0, head), "HEAD": head})
+        u, v, C, Cgdop = totalUnWeightedLeastSquare(df)
+        assert u == pytest.approx(25.0, abs=1e-10)
+        assert v == pytest.approx(-12.0, abs=1e-10)
+        G = np.column_stack((np.sin(np.deg2rad(head)), np.cos(np.deg2rad(head))))
+        npt.assert_allclose(C, np.linalg.inv(G.T @ G), atol=1e-12)
+        npt.assert_array_equal(C, Cgdop)
+
+    def test_conflicting_radials_are_averaged(self):
+        df = pd.DataFrame({"VELO": [1.0, 0.0, 0.0], "HEAD": [0.0, 0.0, 90.0]})
+        u, v, _, _ = totalUnWeightedLeastSquare(df)
+        assert u == pytest.approx(0.0, abs=1e-12)
+        assert v == pytest.approx(0.5, abs=1e-12)
+
+    def test_colinear_radials_return_nan(self):
+        df = pd.DataFrame({"VELO": [0.5, 0.3], "HEAD": [45.0, 225.0]})
+        u, v, C, Cgdop = totalUnWeightedLeastSquare(df)
+        assert np.isnan(u)
+        assert np.isnan(v)
 
 
 # ---------------------------------------------------------------------------
@@ -295,13 +315,20 @@ class TestCombineRadialsEngines:
         assert result["VELU"].notna().sum() > 20
         npt.assert_allclose(result.to_numpy(), expected.to_numpy(), rtol=1e-6, atol=1e-6)
 
-    def test_vectorized_uwls_recovers_uniform_current(self, combine_grid):
+    @pytest.mark.parametrize("engine", ["loop", "vectorized"])
+    @pytest.mark.parametrize("method", ["uwls", "wls"])
+    def test_recovers_uniform_current(self, combine_grid, method, engine):
+        """Noise-free radials of a uniform current must combine back to that current at every grid point."""
         rdf = _radial_dataframe(uniform=(12.0, -7.0))
-        tot, warn = combineRadials(rdf, combine_grid, method="uwls", engine="vectorized", **self.common)
+        tot, warn = combineRadials(rdf, combine_grid, method=method, engine=engine, **self.common)
+        assert warn == ""
         valid = tot.data["VELU"].notna()
         assert valid.sum() > 20
         npt.assert_allclose(tot.data.loc[valid, "VELU"].astype(float), 12.0, atol=1e-8)
         npt.assert_allclose(tot.data.loc[valid, "VELV"].astype(float), -7.0, atol=1e-8)
+        npt.assert_allclose(tot.data.loc[valid, "VELO"].astype(float), np.hypot(12.0, -7.0), atol=1e-8)
+        npt.assert_allclose(tot.data.loc[valid, "HEAD"].astype(float),
+                            np.rad2deg(np.arctan2(12.0, -7.0)) % 360, atol=1e-6)
 
     def test_vectorized_honors_contribution_thresholds(self, combine_grid):
         rdf = _radial_dataframe(np.random.default_rng(0))
