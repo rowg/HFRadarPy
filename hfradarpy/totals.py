@@ -642,7 +642,7 @@ def _setSiteColumns(totData, good, nSites, ror, share):
 
 
 def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls', minContrSites=2, minContrRads=3,
-                                   distance='geodesic'):
+                                   distance='geodesic', count_all_points=False):
     """
     Vectorized equivalent of applying makeTotalVector (method='wls') or makeTotalVector_uwls
     (method='uwls') to every grid point.
@@ -660,6 +660,8 @@ def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls'
         minContrSites: minimum number of contributing radial sites
         minContrRads: minimum number of contributing radial vectors
         distance: 'geodesic' (default) or 'flat' (HFRProgs lonlat2dist), as in radBinsInSearchRadius
+        count_all_points: if True, NRAD is set at every grid point, also where there is no total vector
+                          (see combineRadials)
 
     OUTPUT:
         totData: DataFrame (one row per grid point) with VELU, VELV, VELO, HEAD, UQAL, VQAL, CQAL, GDOP, NRAD,
@@ -667,6 +669,8 @@ def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls'
     """
     npts = len(gridLon)
     totData = _emptyTotData(npts)
+    if count_all_points:
+        totData['NRAD'] = 0.0
 
     if distance == 'flat':
         # The flat-earth distance can be a little shorter than the true one, so search a wider radius
@@ -739,7 +743,10 @@ def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls'
     totData.loc[good, 'VQAL'] = vqal[good]
     totData.loc[good, 'CQAL'] = C01[good]
     totData.loc[good, 'GDOP'] = gdop[good]
-    totData.loc[good, 'NRAD'] = nRad[good]
+    if count_all_points:
+        totData['NRAD'] = nRad.astype(float)
+    else:
+        totData.loc[good, 'NRAD'] = nRad[good]
     _setSiteColumns(totData, good, nSites, ror, share)
 
     return totData
@@ -747,7 +754,7 @@ def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls'
 
 def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx=1, sy=1, minContrRads=3,
                                    minContrSites=2, oi_option='exponential', max_batch_elements=1e5,
-                                   search_factor=2):
+                                   search_factor=2, count_all_points=False):
     """
     Vectorized equivalent of applying makeTotalVector_oi to every grid point.
 
@@ -769,6 +776,8 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
                             CPU cache, which is faster than solving everything at once (default 1e5)
         search_factor: radials are used when sqrt((dx/sx)^2 + (dy/sy)^2) < search_factor (default 2, as in
                        radBinsInSearchRadius)
+        count_all_points: if True, NRAD is set at every grid point, also where there is no total vector
+                          (see combineRadials)
 
     OUTPUT:
         totData: DataFrame (one row per grid point) with VELU, VELV, VELO, HEAD, UQAL, VQAL, CQAL, GDOP, NRAD,
@@ -781,6 +790,8 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
 
     npts = len(gridLon)
     totData = _emptyTotData(npts)
+    if count_all_points:
+        totData['NRAD'] = 0.0
 
     # Radius of influence (radBinsInSearchRadius(oi=True) uses 2)
     normr = search_factor
@@ -873,14 +884,17 @@ def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx
     totData.loc[good, 'VQAL'] = result[good, 3]  # Verr, normalized uncertainty of v (good: 0 poor: 1)
     totData.loc[good, 'CQAL'] = result[good, 4]  # directional info of u and v (UV covariance)
     totData.loc[good, 'GDOP'] = np.sqrt(result[good, 2] ** 2 + result[good, 3] ** 2)  # OI Total Errors
-    totData.loc[good, 'NRAD'] = nRad[good]
+    if count_all_points:
+        totData['NRAD'] = nRad.astype(float)
+    else:
+        totData.loc[good, 'NRAD'] = nRad[good]
     _setSiteColumns(totData, good, nSites, ror, share)
 
     return totData
 
 
 def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True, runParallel=True, engine='loop',
-                  distance='geodesic', oi_search_factor=2):
+                  distance='geodesic', oi_search_factor=2, count_all_points=False):
     """
     This function generataes total vectors from radial measurements using the
     weighted Least Square method for combination.
@@ -921,6 +935,10 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
                   makeTotalsOI rule.
         oi_search_factor: OI uses radials with sqrt((dx/sx)^2 + (dy/sy)^2) < oi_search_factor (default 2, the
                           HFRProgs makeTotalsOI rule). Values other than 2 need engine='vectorized'.
+        count_all_points: if True, NRAD is the number of radials within the search radius of every grid point,
+                          also where too few sites or radials gave no total vector (0 where there are none), as
+                          HFRProgs TotalsNumRads. Use dropPoints=False to keep those grid points. Default False
+                          sets NRAD only where there is a total vector. Needs engine='vectorized'.
 
     With engine='vectorized' the Total also gets site contribution columns: NSIT (number of contributing sites),
     ROR (ratio of overlapping radial velocities, Fang et al. 2015) and MSFR (share of the radials coming from the
@@ -938,6 +956,8 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
         raise ValueError("Several radials per site (repeated site codes in rDF) need engine='vectorized'")
     if engine == 'loop' and oi_search_factor != 2:
         raise ValueError("oi_search_factor other than 2 needs engine='vectorized'")
+    if engine == 'loop' and count_all_points:
+        raise ValueError("count_all_points needs engine='vectorized'")
 
     if tempthreshold is not None and not rDF.empty:
         # Only keep radials within the time window around tStp
@@ -1028,12 +1048,13 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
             if method in ('wls', 'uwls'):
                 totData = makeTotalVectors_ls_vectorized(radArrays, gridLon, gridLat, sRad, g, method=method,
                                                          minContrSites=minContrSites, minContrRads=minContrRads,
-                                                         distance=distance)
+                                                         distance=distance, count_all_points=count_all_points)
             elif method == 'oi':
                 totData = makeTotalVectors_oi_vectorized(radArrays, gridLon, gridLat, mdlvar=mdlvar, errvar=errvar,
                                                          sx=sx, sy=sy, minContrRads=minContrRads,
                                                          minContrSites=minContrSites, oi_option=oi_option,
-                                                         search_factor=oi_search_factor)
+                                                         search_factor=oi_search_factor,
+                                                         count_all_points=count_all_points)
             else:
                 warn = 'No combination performed: not a valid combination method'
                 return Tcomb, warn
@@ -2923,7 +2944,72 @@ class Total(fileParser):
             logger.warning(
                 f"qc_qartod_valid_location did not run, no {flag_column} column, land mask and angseg either not used or not successfully applied")
 
+    def qc_valid_location_polygon(self, lon, lat, flag_inside=True, name='', recalculate=False):
+        """
+        Valid Location (Test 305) against a polygon instead of the hfradarpy land mask, as HFRProgs maskTotals.
 
+        Args:
+            lon, lat (array-like): polygon vertices, e.g. a land mask file of the MATLAB toolbox
+            flag_inside (bool, optional): True (default): the polygon is land, and vectors inside it (or on its
+                edge) fail. False: the polygon is the valid area, and vectors outside it fail.
+            name (str, optional): name of the polygon (for example its file name) for the QC metadata
+        """
+        test_str = 'Q305'
+
+        # check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        inside = inpolygon(self.data['LOND'].to_numpy(dtype=float), self.data['LATD'].to_numpy(dtype=float),
+                           np.asarray(lon, dtype=float), np.asarray(lat, dtype=float))
+        self.data[test_str] = 1
+        self.data.loc[inside if flag_inside else ~inside, test_str] = 4
+        self.metadata['QCTest'][test_str] = f"qc_valid_location_polygon ({test_str}) - Test applies to each row. " \
+                                            f"Thresholds=[polygon={name} fail={'inside' if flag_inside else 'outside'}]: " \
+                                            f"See results in column {test_str} below"
+
+    def qc_threshold(self, test_str, column, threshold, absolute=False, name='qc_threshold', recalculate=False):
+        """
+        Generic maximum threshold test: rows whose value of column (or its absolute value) is larger than the
+        threshold fail. For example the OI total error and UV covariance tests of the Rutgers MATLAB toolbox:
+            T.qc_threshold('Q308', 'GDOP', 1.0, name='qc_oi_total_errors')
+            T.qc_threshold('Q309', 'CQAL', 0.5, absolute=True, name='qc_oi_uv_covariance')
+
+        Args:
+            test_str (str): name of the flag column, e.g. 'Q308'
+            column (str): data column to test
+            threshold (float): maximum allowed value
+            absolute (bool, optional): test the absolute value of column. Defaults to False.
+            name (str, optional): name of the test in the QC metadata
+        """
+        # check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        values = self.data[column].astype(float)
+        if absolute:
+            values = values.abs()
+        self.data[test_str] = 1
+        self.data.loc[values > threshold, test_str] = 4
+        self.metadata['QCTest'][test_str] = f"{name} ({test_str}) - Test applies to each row. " \
+                                            f"Thresholds=[max{' abs' if absolute else ''} {column}={threshold}]: " \
+                                            f"See results in column {test_str} below"
+
+    def use_hfrprogs_gdop(self):
+        """
+        Replace the GDOP column with the GDOP of HFRProgs: the square root of the largest eigenvalue of the
+        covariance matrix C = inv(A'A) (norm_covariance_matrix.m), as used by the QC302 test of the MATLAB
+        toolbox. hfradarpy's unweighted least squares GDOP is sqrt(trace(C)), which is always larger.
+
+        Only meaningful for unweighted least squares totals (method='uwls'), where UQAL and VQAL are the square
+        roots of the diagonal of C and CQAL is its off-diagonal element.
+        """
+        c00 = self.data['UQAL'].astype(float) ** 2
+        c11 = self.data['VQAL'].astype(float) ** 2
+        c01 = self.data['CQAL'].astype(float)
+        trace = c00 + c11
+        det = c00 * c11 - c01 ** 2
+        self.data['GDOP'] = np.sqrt(0.5 * (trace + np.sqrt(trace ** 2 - 4 * det)))
 
     def qc_qartod_primary_flag(self, include=None, recalculate=False):
         """
