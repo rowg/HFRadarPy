@@ -17,6 +17,7 @@ Example usage:
     python radials_to_totals_benchmark.py ~/Downloads/radials_clean --sites NANT BLCK AMAG --hours 24
     python radials_to_totals_benchmark.py ~/Downloads/radials_clean --engines vectorized --workers 4
     python radials_to_totals_benchmark.py ~/Downloads/radials_clean --pattern RDLi   # ideal pattern radials
+    python radials_to_totals_benchmark.py ~/Downloads/radials_clean --time-window 1   # radials from t-1, t, t+1
 
 The loop engine (the original per grid point implementation) only runs for the first --loop-hours hours by
 default. Its time for the full period is extrapolated, and its output is checked against the vectorized engine.
@@ -74,10 +75,14 @@ def load_radial(fname):
     return r
 
 
-def load_radial_sets(files, workers=1):
+def load_radial_sets(files, workers=1, times=None, window=0):
     """
     Load every radial file and build one rDF per hour (index: site code, column: Radial) for combineRadials.
     Sites without a usable file for an hour are left out of that hour.
+
+    With window > 0, the rDF of hour t holds the radials of every site from t - window to t + window hours (one row
+    per radial, so a site code repeats), and files must also cover those neighboring hours. times are the hours to
+    build an rDF for (default: every hour in files).
     """
     paths = [f for f in files.to_numpy().ravel() if f is not None and not pd.isna(f)]
     if workers > 1:
@@ -87,17 +92,28 @@ def load_radial_sets(files, workers=1):
         loaded = {f: load_radial(f) for f in paths}
 
     radial_sets = []
-    for ts, row in files.iterrows():
-        radials = {site: loaded[f] for site, f in row.items()
-                   if f is not None and not pd.isna(f) and loaded.get(f) is not None}
-        radial_sets.append(pd.DataFrame({'Radial': pd.Series(radials, dtype=object)}))
+    for ts in (files.index if times is None else times):
+        rows = files.loc[ts - pd.Timedelta(hours=window):ts + pd.Timedelta(hours=window)]
+        sites, radials = [], []
+        for _, row in rows.iterrows():
+            for site, f in row.items():
+                if f is not None and not pd.isna(f) and loaded.get(f) is not None:
+                    sites.append(site)
+                    radials.append(loaded[f])
+        radial_sets.append(pd.DataFrame({'Radial': pd.Series(radials, index=sites, dtype=object)}))
     return radial_sets
 
 
 def main(radial_dir, grid_file, save_dir, sites, pattern, start, hours, methods, engines, search_radius, grid_res,
-         mdlvar, errvar, sx, sy, loop_hours=2, workers=1, oi_parallel=True, save=True):
+         mdlvar, errvar, sx, sy, loop_hours=2, workers=1, oi_parallel=True, save=True, time_window=0):
     save_dir = Path(save_dir)
     times = pd.date_range(start, periods=hours, freq='h')
+    if time_window and 'loop' in engines:
+        logger.warning('The loop engine cannot combine several radials per site; running the vectorized engine only')
+        engines = [e for e in engines if e != 'loop'] or ['vectorized']
+    # Radials from time_window hours before the first and after the last hour are needed too
+    file_times = pd.date_range(times[0] - pd.Timedelta(hours=time_window), times[-1] + pd.Timedelta(hours=time_window),
+                               freq='h')
 
     if not sites:
         sites = sorted(p.name for p in Path(radial_dir).iterdir() if p.is_dir() and any(p.glob(f'{pattern}_*.ruv')))
@@ -105,16 +121,16 @@ def main(radial_dir, grid_file, save_dir, sites, pattern, start, hours, methods,
     grid = load_grid(grid_file)
     grid_lon, grid_lat = grid.x.to_numpy(), grid.y.to_numpy()
 
-    files = find_radial_files(radial_dir, sites, pattern, times)
-    available = files.notna()
+    files = find_radial_files(radial_dir, sites, pattern, file_times)
+    available = files.loc[times].notna()
     logger.info(f'Found {int(available.to_numpy().sum())} {pattern} files for {len(sites)} sites over {hours} hours')
     for site in sites:
         logger.info(f'  {site}: {int(available[site].sum())}/{hours} hours')
 
     t0 = time.perf_counter()
-    radial_sets = load_radial_sets(files, workers)
+    radial_sets = load_radial_sets(files, workers, times=times, window=time_window)
     load_seconds = time.perf_counter() - t0
-    n_sites = np.array([len(rdf) for rdf in radial_sets])
+    n_sites = np.array([rdf.index.nunique() for rdf in radial_sets])
     n_bins = np.array([sum(len(r.data) for r in rdf['Radial']) for rdf in radial_sets])
     logger.info(f'Loaded radials in {load_seconds:.1f} s: {n_sites.mean():.1f} sites and {n_bins.mean():.0f} '
                 f'radial bins per hour on average ({n_sites.min()}-{n_sites.max()} sites)')
@@ -125,6 +141,9 @@ def main(radial_dir, grid_file, save_dir, sites, pattern, start, hours, methods,
         'oi': dict(method='oi', mdlvar=mdlvar, errvar=errvar, sx=sx, sy=sy, oi_option='exponential',
                    runParallel=oi_parallel),
     }
+    if time_window:
+        for kwargs in method_kwargs.values():
+            kwargs['tempthreshold'] = pd.Timedelta(hours=time_window)
 
     # The loop engine is slow, so by default it only runs the first few hours and its total is extrapolated
     engine_hours = {e: hours for e in engines}
@@ -218,6 +237,9 @@ if __name__ == '__main__':
     parser.add_argument('--loop-hours', default=2, type=int,
                         help='Only run the slow loop engine for this many hours and extrapolate its total time '
                              '(0 = run every hour)')
+    parser.add_argument('--time-window', default=0, type=int,
+                        help='Also combine each site\'s radials from this many hours before and after each hour '
+                             '(Nwankwo et al. 2026 used 1). Vectorized engine only')
     parser.add_argument('--workers', default=1, type=int,
                         help='Spread radial loading and the vectorized hours over this many processes')
     parser.add_argument('--search-radius', default=10.0, type=float,
@@ -234,4 +256,4 @@ if __name__ == '__main__':
     main(args.radials, args.grid, args.output, args.sites, args.pattern, args.start, args.hours, args.methods,
          args.engines, search_radius=args.search_radius * 1000, grid_res=args.grid_res * 1000,
          mdlvar=args.mdlvar, errvar=args.errvar, sx=args.sx, sy=args.sy, loop_hours=args.loop_hours,
-         workers=args.workers, oi_parallel=not args.oi_serial, save=not args.no_save)
+         workers=args.workers, oi_parallel=not args.oi_serial, save=not args.no_save, time_window=args.time_window)

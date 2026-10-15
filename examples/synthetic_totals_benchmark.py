@@ -259,7 +259,7 @@ def run_combination(grid, grid_file, times, radial_sets, method, engine, search_
             logger.warning(f'{ts}: {warn}')
         else:
             out['total'][i] = total
-        logger.info(f'{method}/{engine} {ts:%Y-%m-%d %H:%M} | {len(rdf)} sites | '
+        logger.info(f'{method}/{engine} {ts:%Y-%m-%d %H:%M} | {rdf.index.nunique()} sites | '
                     f'{np.isfinite(out["total"][i, :, 0]).sum():5d} vectors | {duration:8.3f} s')
 
     t0 = time.perf_counter()
