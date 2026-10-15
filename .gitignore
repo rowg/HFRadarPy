@@ -1,8 +1,14 @@
-# Test folders and files
+# Scratch test folders and files. The test suite in tests/ is tracked; git matches these patterns case-insensitively
+# on macOS, so *test* and *TEST* both match tests/ and test_*.py there.
 *test*
 *TEST*
 *FUTURE*
 *future*
+!/tests/
+!/tests/**
+
+# Files written by the examples and the test suite
+/examples/output/
 
 # EU HFR NODE scripts
 *EU_HFR_NODE*

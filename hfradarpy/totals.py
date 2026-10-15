@@ -35,14 +35,14 @@ try:
     import cartopy.io.img_tiles as cimgt
 except Exception as err:
     pass
-from scipy.spatial import ConvexHull
+from scipy.spatial import ConvexHull, cKDTree
 import geopy.distance
 from joblib import Parallel, delayed
 
 logger = logging.getLogger(__name__)
 
 
-def radBinsInSearchRadius(cell, radial, sR, g, oi=False, sx=0, sy=0):
+def radBinsInSearchRadius(cell, radial, sR, g, oi=False, sx=0, sy=0, distance='geodesic'):
     """
     This function finds out which radial bins are within the spatthresh of the
     origin grid cell.
@@ -58,6 +58,9 @@ def radBinsInSearchRadius(cell, radial, sR, g, oi=False, sx=0, sy=0):
                    based on a formula using the decorrelation length scales sx and sy, default is False
         sx: meridional decorrelation length in meters (for OI method only, defaults to 0)
         sy: zonal decorrelation length in meters (for OI method only, defaults to 0)
+        distance: 'geodesic' (default) measures the search radius along the ellipsoid with g.inv.
+                  'flat' uses the flat-earth distance of HFRProgs makeTotals (lonlat2dist: lonlat2km
+                  east/north offsets from the grid cell). Not used when oi is True.
 
 
     OUTPUT:
@@ -69,7 +72,11 @@ def radBinsInSearchRadius(cell, radial, sR, g, oi=False, sx=0, sy=0):
     radLon = radial.data['LOND'].to_numpy()
     radLat = radial.data['LATD'].to_numpy()
 
-    if not oi:
+    if not oi and distance == 'flat':
+        # Flat-earth distance from the grid cell, as HFRProgs lonlat2dist
+        dx, dy = lonlat2km(cell[0], cell[1], radLon, radLat)
+        radInSR = np.where(np.sqrt(dx ** 2 + dy ** 2) < sR / 1000)[0].tolist()
+    elif not oi:
         # Compute the inverse geodesic problem (distance and azimuths)
         # Evaluate distances between origin grid cells and radial bins
         az12, az21, cellToRadDist = g.inv(len(radLon) * [cell[0]], len(radLat) * [cell[1]], radLon, radLat)
@@ -295,7 +302,9 @@ def totalOI(VelHeadLonLat, gridloc, mdlvar,errvar,sx,sy,oi_option='exponential')
     # Compute cmdicdd and final values
     #cmdicdd = np.dot(P_, np.dot(cmd.T, np.linalg.inv(cdd + R))) #slower method
     A = cdd + R
-    X = np.linalg.solve(A, cmd)
+    # cmdicdd = P_ @ cmd.T @ inv(A). A is not exactly symmetric (lonlat2km distances depend on which point is the
+    # origin), so solve with A.T: solve(A.T, cmd).T == cmd.T @ inv(A), as in tuvOI.m
+    X = np.linalg.solve(A.T, cmd)
     cmdicdd = P_ @ X.T
     a = np.dot(cmdicdd, VelHeadLonLat['VELO'])
     xi = np.linalg.inv(P_) @ (P_ - np.dot(np.dot(cmdicdd, cmd), P_))
@@ -498,7 +507,326 @@ def makeTotalVector_oi(rBins,rDF, mdlvar=1,errvar=1,sx=1,sy=1,minContrRads=3,min
     return totalData
 
 
-def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True, runParallel=True):
+# Mean Earth radius (km), used only to build a candidate neighbor search on the sphere.
+# Final radial selection always uses the same distance rule as radBinsInSearchRadius.
+_EARTH_RADIUS_KM = 6371.0
+
+
+def _lonlat_to_xyz(lon, lat):
+    """
+    Convert longitudes/latitudes (degrees) to Cartesian coordinates (km) on a spherical Earth.
+    """
+    lon = np.deg2rad(lon)
+    lat = np.deg2rad(lat)
+    return _EARTH_RADIUS_KM * np.column_stack((np.cos(lat) * np.cos(lon),
+                                               np.cos(lat) * np.sin(lon),
+                                               np.sin(lat)))
+
+
+def _stackRadials(rDF):
+    """
+    Concatenate the radial bins of all the Radial objects in rDF into flat numpy arrays.
+
+    INPUT:
+        rDF: DataFrame containing input Radials; indices must be the site codes.
+
+    OUTPUT:
+        rad: dictionary with LOND, LATD, VELO, HEAD and STD arrays, the SITE index (row of rDF)
+             of each radial bin and the number of sites (nsite).
+             STD is taken from ETMP or sqrt(HCSS) as in makeTotalVector (NaN when neither exists).
+             Radial bins with non-finite coordinates are dropped.
+    """
+    cols = {'LOND': [], 'LATD': [], 'VELO': [], 'HEAD': [], 'STD': [], 'SITE': []}
+    for k, rad in enumerate(rDF['Radial']):
+        d = rad.data
+        cols['LOND'].append(d['LOND'].to_numpy(dtype=float))
+        cols['LATD'].append(d['LATD'].to_numpy(dtype=float))
+        cols['VELO'].append(d['VELO'].to_numpy(dtype=float))
+        cols['HEAD'].append(d['HEAD'].to_numpy(dtype=float))
+        if 'ETMP' in d.columns:
+            cols['STD'].append(d['ETMP'].to_numpy(dtype=float))
+        elif 'HCSS' in d.columns:
+            cols['STD'].append(np.sqrt(d['HCSS'].to_numpy(dtype=float)))
+        else:
+            cols['STD'].append(np.full(len(d), np.nan))
+        cols['SITE'].append(np.full(len(d), k))
+
+    rad = {key: np.concatenate(val) if val else np.array([]) for key, val in cols.items()}
+    rad['SITE'] = rad['SITE'].astype(np.int64)
+    finite = np.isfinite(rad['LOND']) & np.isfinite(rad['LATD'])
+    rad = {key: val[finite] for key, val in rad.items()}
+    rad['nsite'] = len(rDF)
+    return rad
+
+
+def _findRadialPairs(gridLon, gridLat, rad, radius_km):
+    """
+    Find candidate (grid point, radial bin) pairs closer than radius_km using a KD-tree.
+
+    Distances are chord lengths on a spherical Earth with a 2% margin, so the result is a superset
+    of the pairs selected by the exact distance rule, which callers must apply afterwards.
+
+    OUTPUT:
+        gi: grid point index of each pair
+        ri: radial bin index (into the arrays returned by _stackRadials) of each pair
+    """
+    if rad['LOND'].size == 0 or len(gridLon) == 0:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    arc = radius_km * 1.02
+    chord = 2 * _EARTH_RADIUS_KM * np.sin(min(arc / (2 * _EARTH_RADIUS_KM), np.pi / 2))
+    gridTree = cKDTree(_lonlat_to_xyz(gridLon, gridLat))
+    radTree = cKDTree(_lonlat_to_xyz(rad['LOND'], rad['LATD']))
+    sdm = gridTree.sparse_distance_matrix(radTree, chord, output_type='ndarray')
+    return sdm['i'].astype(np.int64), sdm['j'].astype(np.int64)
+
+
+def _countContributingSites(gi, site, nsite, npts):
+    """
+    Number of distinct radial sites contributing to each grid point.
+    """
+    keys = np.unique(gi * nsite + site)
+    return np.bincount(keys // nsite, minlength=npts)
+
+
+def _emptyTotData(npts):
+    return pd.DataFrame(np.nan, index=range(npts),
+                        columns=['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD'])
+
+
+def makeTotalVectors_ls_vectorized(rad, gridLon, gridLat, sRad, g, method='uwls', minContrSites=2, minContrRads=3,
+                                   distance='geodesic'):
+    """
+    Vectorized equivalent of applying makeTotalVector (method='wls') or makeTotalVector_uwls
+    (method='uwls') to every grid point.
+
+    Radial bins are selected with the same rule as radBinsInSearchRadius (distance < sRad),
+    but the neighbor search is done for all grid points at once with a KD-tree. The 2x2 normal
+    equations of each grid point are then accumulated with np.bincount and inverted in closed form.
+
+    INPUT:
+        rad: dictionary of radial arrays returned by _stackRadials
+        gridLon, gridLat: numpy arrays of grid point longitudes and latitudes
+        sRad: search radius for combination in meters
+        g: Geod object according to the Total CRS
+        method: 'uwls' or 'wls'
+        minContrSites: minimum number of contributing radial sites
+        minContrRads: minimum number of contributing radial vectors
+        distance: 'geodesic' (default) or 'flat' (HFRProgs lonlat2dist), as in radBinsInSearchRadius
+
+    OUTPUT:
+        totData: DataFrame (one row per grid point) with VELU, VELV, VELO, HEAD, UQAL, VQAL, CQAL, GDOP, NRAD
+    """
+    npts = len(gridLon)
+    totData = _emptyTotData(npts)
+
+    if distance == 'flat':
+        # The flat-earth distance can be a little shorter than the true one, so search a wider radius
+        gi, ri = _findRadialPairs(gridLon, gridLat, rad, sRad / 1000 * 1.1)
+    else:
+        gi, ri = _findRadialPairs(gridLon, gridLat, rad, sRad / 1000)
+    if gi.size:
+        # Exact selection rule used by radBinsInSearchRadius
+        if distance == 'flat':
+            dx, dy = lonlat2km(gridLon[gi], gridLat[gi], rad['LOND'][ri], rad['LATD'][ri])
+            keep = np.sqrt(dx ** 2 + dy ** 2) < sRad / 1000
+        else:
+            az12, az21, dist = g.inv(gridLon[gi], gridLat[gi], rad['LOND'][ri], rad['LATD'][ri])
+            keep = dist < sRad
+        gi, ri = gi[keep], ri[keep]
+
+    if method == 'wls':
+        # Only keep contributing radials with valid standard deviation values (i.e. different from NaN and 0)
+        std = rad['STD'][ri]
+        valid = np.isfinite(std) & (std != 0)
+        gi, ri, std = gi[valid], ri[valid], std[valid]
+        w = 1 / std ** 2
+    else:
+        w = np.ones(ri.size)
+
+    if gi.size == 0:
+        return totData
+
+    def accumulate(x):
+        return np.bincount(gi, weights=x, minlength=npts)
+
+    # Convert angles from true convention to math convention and form the design matrix columns
+    head = np.deg2rad(true2mathAngle(rad['HEAD'][ri]))
+    c, s, velo = np.cos(head), np.sin(head), rad['VELO'][ri]
+
+    nRad = np.bincount(gi, minlength=npts)
+    nSites = _countContributingSites(gi, rad['SITE'][ri], rad['nsite'], npts)
+
+    # Normal equations: A'A = [[Scc, Scs], [Scs, Sss]], A'b = [Scv, Ssv]
+    Scc, Scs, Sss = accumulate(w * c * c), accumulate(w * c * s), accumulate(w * s * s)
+    Scv, Ssv = accumulate(w * c * velo), accumulate(w * s * velo)
+    det = Scc * Sss - Scs ** 2
+
+    good = (nSites >= minContrSites) & (nRad >= minContrRads)
+    if method == 'wls':
+        good &= det > 0
+    else:
+        good &= np.abs(det) > 1e-5
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        # Covariance matrix C = inv(A'A)
+        C00, C11, C01 = Sss / det, Scc / det, -Scs / det
+        u = C00 * Scv + C01 * Ssv
+        v = C01 * Scv + C11 * Ssv
+        if method == 'wls':
+            # GDOP from the covariance matrix assuming uniform unit errors for all radials
+            Gcc, Gcs, Gss = accumulate(c * c), accumulate(c * s), accumulate(s * s)
+            gdop = np.sqrt(np.abs((Gcc + Gss) / (Gcc * Gss - Gcs ** 2)))
+        else:
+            gdop = np.sqrt(C00 + C11)
+        uqal, vqal = np.sqrt(C00), np.sqrt(C11)
+
+    good &= ~np.isnan(u)
+
+    totData.loc[good, 'VELU'] = u[good]
+    totData.loc[good, 'VELV'] = v[good]
+    totData.loc[good, 'VELO'] = np.sqrt(u[good] ** 2 + v[good] ** 2)
+    totData.loc[good, 'HEAD'] = (360 + np.arctan2(u[good], v[good]) * 180 / np.pi) % 360
+    totData.loc[good, 'UQAL'] = uqal[good]
+    totData.loc[good, 'VQAL'] = vqal[good]
+    totData.loc[good, 'CQAL'] = C01[good]
+    totData.loc[good, 'GDOP'] = gdop[good]
+    totData.loc[good, 'NRAD'] = nRad[good]
+
+    return totData
+
+
+def makeTotalVectors_oi_vectorized(rad, gridLon, gridLat, mdlvar=1, errvar=1, sx=1, sy=1, minContrRads=3,
+                                   minContrSites=2, oi_option='exponential', max_batch_elements=1e5):
+    """
+    Vectorized equivalent of applying makeTotalVector_oi to every grid point.
+
+    Radial bins are selected with the same rule as radBinsInSearchRadius(oi=True), but the neighbor
+    search is done for all grid points at once with a KD-tree. Grid points are then sorted by their
+    number of contributing radials and solved in padded batches with np.linalg.solve. Padded entries
+    form an identity block that is decoupled from the real data, so they do not change the solution.
+
+    INPUT:
+        rad: dictionary of radial arrays returned by _stackRadials
+        gridLon, gridLat: numpy arrays of grid point longitudes and latitudes
+        mdlvar: a priori model variance of the surface currents
+        errvar: observational error variance (scalar)
+        sx, sy: decorrelation length scales in km (same units as lonlat2km)
+        minContrRads: minimum number of contributing radial vectors
+        minContrSites: minimum number of contributing radial sites
+        oi_option: 'exponential' or 'gaussian'
+        max_batch_elements: maximum number of matrix elements solved in one batch. Small batches stay in the
+                            CPU cache, which is faster than solving everything at once (default 1e5)
+
+    OUTPUT:
+        totData: DataFrame (one row per grid point) with VELU, VELV, VELO, HEAD, UQAL, VQAL, CQAL, GDOP, NRAD
+    """
+    if not np.isscalar(errvar):
+        raise ValueError('The vectorized OI engine only supports a constant (scalar) errvar')
+    if oi_option not in ('exponential', 'gaussian'):
+        raise ValueError(f"Invalid oi_option '{oi_option}': must be 'exponential' or 'gaussian'")
+
+    npts = len(gridLon)
+    totData = _emptyTotData(npts)
+
+    # Same radius of influence as radBinsInSearchRadius(oi=True)
+    normr = 2
+    gi, ri = _findRadialPairs(gridLon, gridLat, rad, normr * max(sx, sy) * 1.1)
+    if gi.size:
+        dx, dy = lonlat2km(gridLon[gi], gridLat[gi], rad['LOND'][ri], rad['LATD'][ri])
+        keep = np.sqrt((dx / sx) ** 2 + (dy / sy) ** 2) < normr
+        gi, ri = gi[keep], ri[keep]
+    if gi.size == 0:
+        return totData
+
+    # Group the pairs by grid point
+    order = np.argsort(gi, kind='stable')
+    gi, ri = gi[order], ri[order]
+    nRad = np.bincount(gi, minlength=npts)
+    nSites = _countContributingSites(gi, rad['SITE'][ri], rad['nsite'], npts)
+    start = np.concatenate(([0], np.cumsum(nRad)[:-1]))
+
+    # Solve points with a similar number of radials together to minimize padding
+    points = np.flatnonzero((nSites >= minContrSites) & (nRad >= minContrRads))
+    points = points[np.argsort(nRad[points], kind='stable')]
+
+    # Convert angles from true convention to math convention (radians)
+    headAll = np.deg2rad(true2mathAngle(rad['HEAD']))
+    result = np.full((npts, 5), np.nan)  # u, v, xi[0,0], xi[1,1], xi[0,1]
+
+    i = 0
+    while i < points.size:
+        j = i + 1
+        while j < points.size and (j - i + 1) * nRad[points[j]] ** 2 <= max_batch_elements:
+            j += 1
+        batch = points[i:j]
+        nmax = nRad[batch].max()
+
+        col = np.arange(nmax)
+        mask = col[None, :] < nRad[batch][:, None]
+        r = ri[np.where(mask, start[batch][:, None] + col[None, :], 0)]
+
+        lon, lat, head = rad['LOND'][r], rad['LATD'][r], headAll[r]
+        velo = np.where(mask, rad['VELO'][r], 0)
+
+        # Data-grid distances (origin at the radial bins, as in totalOI)
+        dx, dy = lonlat2km(lon, lat, gridLon[batch][:, None], gridLat[batch][:, None])
+        # Data-data distances
+        drx, dry = lonlat2km(lon[:, None, :], lat[:, None, :], lon[:, :, None], lat[:, :, None])
+
+        if oi_option == 'gaussian':
+            cmd = np.exp(-(dx ** 2 / sx ** 2 + dy ** 2 / sy ** 2))
+            w_ = np.exp(-(drx ** 2 / sx ** 2 + dry ** 2 / sy ** 2)) * mdlvar
+        else:
+            cmd = np.exp(-np.sqrt(dx ** 2 / sx ** 2 + dy ** 2 / sy ** 2))
+            w_ = np.exp(-np.sqrt(drx ** 2 / sx ** 2 + dry ** 2 / sy ** 2)) * mdlvar
+
+        cmd = np.where(mask, cmd, 0)
+        cmd = np.stack((cmd * np.cos(head), cmd * np.sin(head)), axis=-1)  # (batch, n, 2)
+
+        cosh, sinh = np.cos(head), np.sin(head)
+        cdd = w_ * (cosh[:, None, :] * cosh[:, :, None] + sinh[:, None, :] * sinh[:, :, None])
+        cdd = np.where(mask[:, :, None] & mask[:, None, :], cdd, 0)
+        A = cdd + np.eye(nmax)[None, :, :] * np.where(mask, errvar, 1)[:, :, None]
+        # Solve with A transposed: A is not exactly symmetric (see totalOI)
+        A = np.swapaxes(A, 1, 2)
+
+        try:
+            X = np.linalg.solve(A, cmd)
+        except np.linalg.LinAlgError:
+            # Fall back to solving each grid point on its own so one singular system does not drop the batch
+            X = np.full(cmd.shape, np.nan)
+            for k in range(len(batch)):
+                try:
+                    X[k] = np.linalg.solve(A[k], cmd[k])
+                except np.linalg.LinAlgError:
+                    pass
+
+        cmdicdd = mdlvar * np.swapaxes(X, 1, 2)  # P_ @ X.T with P_ = mdlvar * I
+        a = np.einsum('bkn,bn->bk', cmdicdd, velo)
+        xi = np.eye(2)[None, :, :] - cmdicdd @ cmd  # inv(P_) @ (P_ - cmdicdd @ cmd @ P_)
+
+        result[batch] = np.column_stack((a[:, 0], a[:, 1], xi[:, 0, 0], xi[:, 1, 1], xi[:, 0, 1]))
+        i = j
+
+    u, v = result[:, 0], result[:, 1]
+    good = ~np.isnan(u)
+
+    totData.loc[good, 'VELU'] = u[good]
+    totData.loc[good, 'VELV'] = v[good]
+    totData.loc[good, 'VELO'] = np.sqrt(u[good] ** 2 + v[good] ** 2)
+    totData.loc[good, 'HEAD'] = (360 + np.arctan2(u[good], v[good]) * 180 / np.pi) % 360
+    totData.loc[good, 'UQAL'] = result[good, 2]  # Uerr, normalized uncertainty of u (good: 0 poor: 1)
+    totData.loc[good, 'VQAL'] = result[good, 3]  # Verr, normalized uncertainty of v (good: 0 poor: 1)
+    totData.loc[good, 'CQAL'] = result[good, 4]  # directional info of u and v (UV covariance)
+    totData.loc[good, 'GDOP'] = np.sqrt(result[good, 2] ** 2 + result[good, 3] ** 2)  # OI Total Errors
+    totData.loc[good, 'NRAD'] = nRad[good]
+
+    return totData
+
+
+def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=3, method='wls',mdlvar=1, errvar=1, sx=1, sy=1,oi_option='exponential', tempthreshold=None, useLandMask=True, dropPoints=True, runParallel=True, engine='loop',
+                  distance='geodesic'):
     """
     This function generataes total vectors from radial measurements using the
     weighted Least Square method for combination.
@@ -519,11 +847,29 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
         sy: y decorrelation length scale (for OI method only)
         oi_weighting: either 'gaussian' or 'exponential' (for OI method only, default to 'exponential')
         tempthreshold: currently not used, was an option in hfrprogs to allow for a window of timestamps for radial contributions
+        useLandMask: whether to mask out vectors on land (default to True)
+        dropPoints: whether to drop grid points without total vectors (default to True)
+        runParallel: run the OI combination in parallel with joblib (engine='loop' only, default to True)
+        engine: 'loop' (default) evaluates each grid point separately. 'vectorized' finds the contributing
+                radials of all grid points at once with a KD-tree and solves the combination with array
+                operations; it gives the same results and is much faster (orders of magnitude for wls/uwls).
+                With engine='vectorized', minContrSites and minContrRads are also honored for method='wls'
+                and errvar must be a scalar.
+        distance: how the search radius is measured for method='wls' or 'uwls'. 'geodesic' (default) uses
+                  the distance along the Total CRS ellipsoid. 'flat' uses the flat-earth distance of HFRProgs
+                  makeTotals (lonlat2dist), to select the same radials as the MATLAB toolbox; the two differ
+                  only for radials within metres of the search radius. method='oi' always uses the HFRProgs
+                  makeTotalsOI rule.
 
     OUTPUT:
         Tcomb: Total object generated by the combination
         warn: string containing warnings related to the success of the combination
     """
+    if engine not in ('loop', 'vectorized'):
+        raise ValueError(f"Invalid engine '{engine}': must be 'loop' or 'vectorized'")
+    if distance not in ('geodesic', 'flat'):
+        raise ValueError(f"Invalid distance '{distance}': must be 'geodesic' or 'flat'")
+
     # Initialize empty warning string
     warn = ''
 
@@ -591,59 +937,78 @@ def combineRadials(rDF, gridGS, sRad, gRes, tStp, minContrSites=2, minContrRads=
         # Create Geod object according to the Total CRS
         g = Geod(ellps=Tcomb.metadata['GreatCircle'].split()[0])
 
-        # Create DataFrame for storing indices of radial bins falling within the search radius of each grid cell
-        combineRadBins = pd.DataFrame(columns=range(len(Tcomb.data.index)))
-
-        # Figure out which radial bins are within the spatthresh of each grid cell
-        if method == 'oi':
-            oi = True
-        else:
-            oi = False
-
-        for Rindex, Rrow in rDF.iterrows():
-            rad = Rrow['Radial']
-            thisRadBins = Tcomb.data.loc[:, ['LOND', 'LATD']].apply(lambda x: radBinsInSearchRadius(x, rad, sRad, g, oi, sx, sy),
-                                                                    axis=1)
-
-            combineRadBins.loc[Rindex] = thisRadBins
-
-        #xylon = Tcomb.data.loc[:, ['LOND', 'LATD']]
-
-        # Loop over grid points and pull out contributing radial vectors
-        combineRadBins = combineRadBins.T
-        gridpoints = Tcomb.data[['LOND', 'LATD']]
-        # The OI method requires that longitude and latitude values to be included
-        # because of how it sets the radius of influence for inputs.
-        if oi:
-            combineRadBins['LOND'] = gridpoints['LOND']
-            combineRadBins['LATD'] = gridpoints['LATD']
-
-        if method == 'wls':
-            totData = combineRadBins.apply(lambda x: makeTotalVector(x, rDF), axis=1)
-        elif method == 'uwls':
-            totData = combineRadBins.apply(lambda x: makeTotalVector_uwls(x, rDF, minContrRads=minContrRads, minContrSites=minContrSites), axis=1)
-        elif method == 'oi':
-
-            if runParallel:
-                totData = Parallel(n_jobs=-1)(
-                    delayed(makeTotalVector_oi)(
-                    row, rDF,
-                    mdlvar=mdlvar,
-                    errvar=errvar,
-                    sx=sx,
-                    sy=sy,
-                    minContrRads=minContrRads,
-                    minContrSites=minContrSites,
-                    oi_option=oi_option
-                )
-                for _, row in combineRadBins.iterrows()
-                )
-                totData = pd.DataFrame(totData)
+        if engine == 'vectorized':
+            # Find contributing radials for all grid points at once and solve the combination with array operations
+            gridLon = Tcomb.data['LOND'].to_numpy(dtype=float)
+            gridLat = Tcomb.data['LATD'].to_numpy(dtype=float)
+            radArrays = _stackRadials(rDF)
+            if method in ('wls', 'uwls'):
+                totData = makeTotalVectors_ls_vectorized(radArrays, gridLon, gridLat, sRad, g, method=method,
+                                                         minContrSites=minContrSites, minContrRads=minContrRads,
+                                                         distance=distance)
+            elif method == 'oi':
+                totData = makeTotalVectors_oi_vectorized(radArrays, gridLon, gridLat, mdlvar=mdlvar, errvar=errvar,
+                                                         sx=sx, sy=sy, minContrRads=minContrRads,
+                                                         minContrSites=minContrSites, oi_option=oi_option)
             else:
-                totData = combineRadBins.apply(lambda x: makeTotalVector_oi(x,rDF,mdlvar=mdlvar,errvar=errvar,sx=sx,sy=sy,minContrRads=minContrRads,minContrSites=minContrSites,oi_option=oi_option),axis=1)
+                warn = 'No combination performed: not a valid combination method'
+                return Tcomb, warn
+            totData.index = Tcomb.data.index
 
         else:
-            warn = 'No combination performed: not a valid combination method'
+            # Create DataFrame for storing indices of radial bins falling within the search radius of each grid cell
+            combineRadBins = pd.DataFrame(columns=range(len(Tcomb.data.index)))
+
+            # Figure out which radial bins are within the spatthresh of each grid cell
+            if method == 'oi':
+                oi = True
+            else:
+                oi = False
+
+            for Rindex, Rrow in rDF.iterrows():
+                rad = Rrow['Radial']
+                thisRadBins = Tcomb.data.loc[:, ['LOND', 'LATD']].apply(lambda x: radBinsInSearchRadius(x, rad, sRad, g, oi, sx, sy, distance),
+                                                                        axis=1)
+
+                combineRadBins.loc[Rindex] = thisRadBins
+
+            #xylon = Tcomb.data.loc[:, ['LOND', 'LATD']]
+
+            # Loop over grid points and pull out contributing radial vectors
+            combineRadBins = combineRadBins.T
+            gridpoints = Tcomb.data[['LOND', 'LATD']]
+            # The OI method requires that longitude and latitude values to be included
+            # because of how it sets the radius of influence for inputs.
+            if oi:
+                combineRadBins['LOND'] = gridpoints['LOND']
+                combineRadBins['LATD'] = gridpoints['LATD']
+
+            if method == 'wls':
+                totData = combineRadBins.apply(lambda x: makeTotalVector(x, rDF), axis=1)
+            elif method == 'uwls':
+                totData = combineRadBins.apply(lambda x: makeTotalVector_uwls(x, rDF, minContrRads=minContrRads, minContrSites=minContrSites), axis=1)
+            elif method == 'oi':
+
+                if runParallel:
+                    totData = Parallel(n_jobs=-1)(
+                        delayed(makeTotalVector_oi)(
+                        row, rDF,
+                        mdlvar=mdlvar,
+                        errvar=errvar,
+                        sx=sx,
+                        sy=sy,
+                        minContrRads=minContrRads,
+                        minContrSites=minContrSites,
+                        oi_option=oi_option
+                    )
+                    for _, row in combineRadBins.iterrows()
+                    )
+                    totData = pd.DataFrame(totData)
+                else:
+                    totData = combineRadBins.apply(lambda x: makeTotalVector_oi(x,rDF,mdlvar=mdlvar,errvar=errvar,sx=sx,sy=sy,minContrRads=minContrRads,minContrSites=minContrSites,oi_option=oi_option),axis=1)
+
+            else:
+                warn = 'No combination performed: not a valid combination method'
 
         # Assign column names to the combination DataFrame
         totData.columns = ['VELU', 'VELV', 'VELO', 'HEAD', 'UQAL', 'VQAL', 'CQAL', 'GDOP', 'NRAD']

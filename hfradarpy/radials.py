@@ -251,8 +251,10 @@ class Radial(fileParser):
                 # and remove tableheader labels from protected attributes
                 # (otherwise there will be an error in writing the file to ruv)
                 self.data.drop(test_str, axis=1,inplace=True)
-                self._tables[1]["_TableHeader"][0].remove(test_str)
-                self._tables[1]["_TableHeader"][1].remove("(flag)")
+                header = self._tables[1]["_TableHeader"]
+                if header and test_str in header[0]:
+                    header[0].remove(test_str)
+                    header[1].remove("(flag)")
                 # Remove the previous QCTest information in the header
                 if test_str in self.metadata['QCTest']:
                     del self.metadata['QCTest'][test_str]
@@ -2206,15 +2208,24 @@ class Radial(fileParser):
         if self.duplicate_test_check(test_str, recalculate=recalculate):
             return
 
-        # Absolute value of the difference between the bearing mean and reference bearing
-        absolute_difference = np.abs(self.data["BEAR"].mean() - reference_bearing)
+        # Average the bearings after unwrapping them around their circular mean, so coverage that
+        # crosses north (e.g. 350-10 degrees) averages to ~0 rather than ~180
+        bearing = self.data["BEAR"]
+        radians = np.deg2rad(bearing)
+        centre = np.rad2deg(np.arctan2(np.sin(radians).mean(), np.cos(radians).mean()))
+        mean_bearing = centre + ((bearing - centre + 180) % 360 - 180).mean()
+
+        # Absolute value of the shortest angular difference between the bearing mean and reference bearing
+        absolute_difference = np.abs((mean_bearing - reference_bearing + 180) % 360 - 180)
 
         if absolute_difference >= failure_threshold:
             flag = 4
-        elif (absolute_difference >= warning_threshold) & (absolute_difference < failure_threshold):
+        elif absolute_difference >= warning_threshold:
             flag = 3
         elif absolute_difference < warning_threshold:
             flag = 1
+        else:
+            flag = 2  # no bearings to average
 
         self.data[test_str] = flag  # Assign the flags to the column
         self.metadata['QCTest'][
@@ -2415,9 +2426,9 @@ class Radial(fileParser):
         # Add new column to dataframe for test, and set every row as passing, 1, flag
         self.data[test_str] = 1
 
-        # velocity is less than radial_max_speed but greater than radial_high_speed, set that row as a warning, 3, flag
+        # velocity is at most radial_max_speed but greater than radial_high_speed, set that row as a warning, 3, flag
         self.data.loc[
-            (self.data["VELO"].abs() < max_speed) & (self.data["VELO"].abs() > high_speed), test_str
+            (self.data["VELO"].abs() <= max_speed) & (self.data["VELO"].abs() > high_speed), test_str
         ] = 3
 
         # if velocity is greater than radial_max_speed, set that row as a fail, 4, flag
@@ -2568,6 +2579,8 @@ class Radial(fileParser):
             return
 
         i = 0
+        timestr = None
+        filetime = None
 
         # check for timestamp in filename
         result = re.search(r"\d{4}_\d{2}_\d{2}_\d{4}", self.file_name)
@@ -2579,26 +2592,29 @@ class Radial(fileParser):
         if self.is_valid():
             i = i + 1
 
-        # The following metadata must be defined.
-        tmp = self.metadata
-        if (
-                tmp["FileType"] and tmp["Site"] and tmp["TimeStamp"] and tmp["Origin"] and tmp["PatternType"] and tmp[
-            "TimeZone"]
-        ):
-            filetime = dt.datetime(*map(int, self.metadata["TimeStamp"].split()))
-            i = i + 1
+        # The following metadata must be defined. Antenna pattern type only applies to DF (CODAR) systems.
+        required = ["FileType", "Site", "TimeStamp", "Origin", "TimeZone"]
+        if not self.is_wera:
+            required.append("PatternType")
+        if all(self.metadata.get(key) for key in required):
+            try:
+                filetime = dt.datetime(*map(int, self.metadata["TimeStamp"].split()))
+                i = i + 1
+            except (TypeError, ValueError):
+                pass
 
         # Filename timestamp must match the timestamp reported within the file.
-        if timestr == filetime:
+        if timestr is not None and timestr == filetime:
             i = i + 1
 
         # Radial data table columns stated must match the number of columns reported for each row
-        if len(self._tables[1]["TableColumnTypes"].split()) == self.data.shape[1]:
+        column_types = self._tables.get(1, {}).get("TableColumnTypes", "")
+        if len(column_types.split()) == self.data.shape[1]:
             i = i + 1
 
         # Make sure site location is within range: -180 <= lon <= 180 & -90 <= lat <= 90
-        latlon = re.findall(r"[-+]?\d*\.\d+|\d+", self.metadata["Origin"])
-        if (-180 <= float(latlon[1]) <= 180) & (-90 <= float(latlon[0]) <= 90):
+        latlon = re.findall(r"[-+]?\d*\.\d+|\d+", self.metadata.get("Origin") or "")
+        if len(latlon) >= 2 and (-180 <= float(latlon[1]) <= 180) & (-90 <= float(latlon[0]) <= 90):
             i = i + 1
 
         if i == 6:
@@ -2694,11 +2710,11 @@ class Radial(fileParser):
                 # If any point in the recent radial does not exist in the previous radial, set row as a not evaluated, 2, flag
                 self.data.loc[merged['Exist'] == 'left_only', test_str] = 2
 
-                # If velocity difference is less than failure threshold but greater than warning threshold, set row as a warning, 3, flag
-                self.data.loc[(difference < gradient_temp_fail) & (difference > gradient_temp_warn), test_str] = 3
+                # If velocity difference is less than failure threshold but at least the warning threshold, set row as a warning, 3, flag
+                self.data.loc[(difference < gradient_temp_fail) & (difference >= gradient_temp_warn), test_str] = 3
 
-                # If velocity difference is greater than failure threshold, set that row as a fail, 4, flag
-                self.data.loc[(difference > gradient_temp_fail), test_str] = 4
+                # If velocity difference is at least the failure threshold, set that row as a fail, 4, flag
+                self.data.loc[(difference >= gradient_temp_fail), test_str] = 4
             elif len(self.data['VELO']) > 0:  # criteria for data availability in current file
                 # Add new column to dataframe for test, and set every row as not_evaluated, 2, flag
                 self.data[test_str] = 2
@@ -3057,8 +3073,12 @@ class Radial(fileParser):
             test_string (str): key
             test_unit (str): value
         """
-        self._tables[1]["_TableHeader"][0].append(test_string)
-        self._tables[1]["_TableHeader"][1].append(test_unit)
+        header = self._tables[1]["_TableHeader"]
+        if not header:
+            # Some files (e.g. WERA hfrweralluv1.0) have no column name/unit rows to append to
+            return
+        header[0].append(test_string)
+        header[1].append(test_unit)
 
     # EUROPEAN HFR NODE (EHN) QC Tests
 

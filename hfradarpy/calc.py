@@ -6,7 +6,6 @@ from shapely.geometry import Point
 from geopandas import GeoSeries
 import pandas as pd
 import datetime as dt
-from polycircles import polycircles
 from shapely.geometry.polygon import Polygon
 import shapely
 
@@ -512,12 +511,25 @@ def gridded_index(X, Y, x, y, flag=np.nan):
     return x_ind, y_ind
 
 def scircle1(lat, lon, radius, num=99):
-    """Number of vertices inside circle"""
-    polycircle = polycircles.Polycircle(latitude=lat, longitude=lon,
-                                        radius=radius*1e3,
-                                        number_of_vertices=num)
-    verticles = np.array(polycircle.vertices)
-    return verticles[:, 0], verticles[:, 1]
+    """
+    Polygon approximating a circle on the WGS84 ellipsoid.
+
+    The vertices are found by solving the direct geodesic problem from the center point at num evenly spaced
+    azimuths (0, 360/num, ...), and the first vertex is repeated at the end to close the polygon.
+
+    INPUT:
+        lat: latitude of the circle center (degrees)
+        lon: longitude of the circle center (degrees)
+        radius: circle radius in kilometers
+        num: number of vertices (default 99)
+
+    OUTPUT:
+        lats, lons: numpy arrays (num + 1 values) with the latitudes and longitudes of the closed polygon
+    """
+    azimuths = 360.0 / num * np.arange(num)
+    lons, lats, _ = geodesic.fwd(np.full(num, lon, dtype=float), np.full(num, lat, dtype=float), azimuths,
+                                 np.full(num, radius * 1e3, dtype=float))
+    return np.append(lats, lats[0]), np.append(lons, lons[0])
 
 def inpolygon(xq, yq, xv, yv):
     """number of points inside polygon"""

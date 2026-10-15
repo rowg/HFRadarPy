@@ -1,19 +1,18 @@
 name: hfradarpy
 channels:
   - conda-forge
-  - defaults
 dependencies:
   - python>=3.10
   - xarray
   - netcdf4
   - pyproj
+  - scipy
   - joblib
   - click
   - bottleneck
   - dask
   - geopandas
   - shapely
-  - polycircles
   - cartopy
   - matplotlib
   - cmocean
