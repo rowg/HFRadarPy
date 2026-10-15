@@ -1,6 +1,8 @@
 xarray
 netcdf4
 pyproj
+geopy
+scipy
 joblib
 geopandas
 shapely
