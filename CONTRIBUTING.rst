@@ -1,127 +1,110 @@
-
 ============
 Contributing
 ============
 
-Contributions are welcome, and they are greatly appreciated! Every little bit
-helps, and credit will always be given.
+Contributions to HFRadarPy are welcome. Bug reports, focused feature
+proposals, documentation improvements, new file-format fixtures, and tested
+code changes all help the project.
 
-You can contribute in many ways:
-
-Types of Contributions
-----------------------
-
-Report Bugs
-~~~~~~~~~~~
-
-Report bugs at https://github.com/rucool/hfradarpy/issues.
-
-If you are reporting a bug, please include:
-
-* Your operating system name and version.
-* Any details about your local setup that might be helpful in troubleshooting.
-* Detailed steps to reproduce the bug.
-
-Fix Bugs
-~~~~~~~~
-
-Look through the GitHub issues for bugs. Anything tagged with "bug" and "help
-wanted" is open to whoever wants to implement it.
-
-Implement Features
-~~~~~~~~~~~~~~~~~~
-
-Look through the GitHub issues for features. Anything tagged with "enhancement"
-and "help wanted" is open to whoever wants to implement it.
-
-Write Documentation
-~~~~~~~~~~~~~~~~~~~
-
-HFRadarPy could always use more documentation, whether as part of the
-official HFRadarPy docs, in docstrings, or even on the web in blog posts,
-articles, and such.
-
-Submit Feedback
-~~~~~~~~~~~~~~~
-
-The best way to send feedback is to file an issue at https://github.com/rucool/hfradarpy/issues.
-
-If you are proposing a feature:
-
-* Explain in detail how it would work.
-* Keep the scope as narrow as possible, to make it easier to implement.
-* Remember that this is a volunteer-driven project, and that contributions
-  are welcome :)
-
-Get Started!
-------------
-
-Ready to contribute? Here's how to set up `hfradarpy` for local development.
-
-1. Fork the `hfradarpy` repo on GitHub.
-2. Clone your fork locally::
-
-    $ git clone git@github.com:your_name_here/hfradarpy.git
-
-3. Install your local copy into a virtualenv. Assuming you have virtualenvwrapper installed, this is how you set up your fork for local development::
-
-    $ mkvirtualenv hfradarpy
-    $ cd hfradarpy/
-    $ python setup.py develop
-
-4. Create a branch for local development::
-
-    $ git checkout -b name-of-your-bugfix-or-feature
-
-   Now you can make your changes locally.
-
-5. When you're done making changes, check that your changes pass flake8 and the
-   tests, including testing other Python versions with tox::
-
-    $ flake8 hfradarpy tests
-    $ python setup.py test or pytest
-    $ tox
-
-   To get flake8 and tox, just pip install them into your virtualenv.
-
-6. Commit your changes and push your branch to GitHub::
-
-    $ git add .
-    $ git commit -m "Your detailed description of your changes."
-    $ git push origin name-of-your-bugfix-or-feature
-
-7. Submit a pull request through the GitHub website.
-
-Pull Request Guidelines
+Before opening an issue
 -----------------------
 
-Before you submit a pull request, check that it meets these guidelines:
+Search the `issue tracker <https://github.com/rowg/HFRadarPy/issues>`_ for an
+existing report. For a bug, include:
 
-1. The pull request should include tests.
-2. If the pull request adds functionality, the docs should be updated. Put
-   your new functionality into a function with a docstring, and add the
-   feature to the list in README.rst.
-3. The pull request should work for Python 3.5, 3.6, 3.7 and 3.8, and for PyPy. Check
-   https://travis-ci.com/rucool/hfradarpy/pull_requests
-   and make sure that the tests pass for all supported Python versions.
+* the HFRadarPy and Python versions;
+* operating system and installation method;
+* manufacturer and product type (for example CODAR radial or WERA total);
+* a minimal code example;
+* the complete traceback; and
+* a small, shareable input file when licensing and operational policy permit.
 
-Tips
-----
+Do not publish credentials, private endpoints, or restricted observational
+data. A feature proposal should explain the use case, expected interface, and
+how success can be tested.
 
-To run a subset of tests::
+Development setup
+-----------------
 
-$ pytest tests.test_hfradarpy
+Fork the repository, then clone your fork::
 
+    git clone https://github.com/YOUR-USER/HFRadarPy.git
+    cd HFRadarPy
 
-Deploying
----------
+Create the development environment and install the checkout in editable
+mode::
 
-A reminder for the maintainers on how to deploy.
-Make sure all your changes are committed (including an entry in HISTORY.rst).
-Then run::
+    mamba env create -f environment_dev.yml
+    mamba activate hfradarpy
+    python -m pip install -e .
 
-$ bump2version patch # possible: major / minor / patch
-$ git push
-$ git push --tags
+Create a focused branch::
 
-Travis will then deploy to PyPI if tests pass.
+    git switch -c fix/short-description
+
+Running tests
+-------------
+
+Run the full suite from the repository root::
+
+    pytest
+
+During development, run the narrowest relevant file first::
+
+    pytest tests/test_radials.py
+    pytest tests/test_qc.py -k spatial_median
+
+Changes to parsers or exporters should normally include a round-trip test.
+Algorithm changes should cover normal input, missing values, boundary
+conditions, and invalid configuration. Keep new fixtures as small as possible.
+
+Documentation
+-------------
+
+User-visible changes require documentation. Put task-oriented explanation in
+the appropriate guide under ``docs/`` and keep public docstrings accurate.
+Examples must be runnable and should state units, coordinate conventions,
+mutation behavior, and return types when those are not obvious.
+
+Build the documentation with warnings treated as errors::
+
+    python -m pip install -r docs/requirements.txt
+    python -m sphinx -W --keep-going -b html docs docs/_build/html
+
+The documentation is organized as:
+
+* ``getting_started.rst`` for a first successful workflow;
+* task guides such as ``radials.rst`` and ``totals.rst``;
+* ``concepts.rst`` for conventions shared across workflows; and
+* ``api/`` for generated symbol reference.
+
+Pull requests
+-------------
+
+Keep each pull request scoped to one problem. A strong pull request:
+
+* explains the user-visible problem and the chosen behavior;
+* includes tests that fail before and pass after the change;
+* updates documentation and ``HISTORY.rst`` when appropriate;
+* avoids unrelated formatting or generated-file changes; and
+* passes the test and strict documentation builds.
+
+If a behavior changes scientific output, document the previous and new
+results, units, tolerances, and validation method. Preserve source-file
+provenance in any comparison.
+
+Code style
+----------
+
+Follow the surrounding code, use descriptive names, and keep public APIs
+backward compatible unless a breaking change is intentional and documented.
+Prefer ``pathlib.Path`` for new path handling. Public functions and methods
+need docstrings that describe parameters, return values, units, mutation, and
+raised exceptions.
+
+Releases
+--------
+
+Releases are performed by maintainers. Update the history entry before
+tagging, run the full tests and documentation build, and verify package
+metadata and installation from the built artifact.

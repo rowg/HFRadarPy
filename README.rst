@@ -2,140 +2,119 @@
 HFRadarPy
 =========
 
+HFRadarPy is a Python toolbox for reading, quality controlling, transforming,
+combining, and exporting high-frequency radar (HFR) ocean-surface-current
+data. It understands CODAR tabular (CTF/LLUV) and WERA products and exposes
+their data as familiar pandas and xarray objects.
 
-.. .. image:: https://circleci.com/gh/rucool/HFRadarPy/tree/master.svg?style=svg
-..    :target: https://circleci.com/gh/rucool/HFRadarPy/tree/master
+HFRadarPy is useful when you need to:
 
-.. .. image:: https://codecov.io/gh/rucool/hfradarpy/branch/master/graph/badge.svg
-..    :target: https://codecov.io/gh/rucool/hfradarpy
+* inspect CODAR radial, total, wave, diagnostic, or antenna-pattern files;
+* read WERA radial and total files;
+* run IOOS QARTOD quality-control tests and retain their flags;
+* convert radial, total, and wave products to compressed NetCDF;
+* concatenate a time series of files into an xarray dataset;
+* combine radial measurements into total vectors with least squares or
+  optimal interpolation; or
+* fill gaps and validate total-vector products against in-situ observations.
 
+Quick start
+-----------
 
+Install the latest release from conda-forge::
 
+    mamba install -c conda-forge hfradarpy
 
-Toolbox to work with High Frequency Radar (HFR) files.
+Load a CODAR radial, inspect its native table, run QARTOD tests, and create a
+CF-oriented NetCDF file::
 
+    from pathlib import Path
 
-* Free software: MIT license
-* Documentation: https://hfradarpy.readthedocs.io.
+    from hfradarpy.radials import Radial
 
+    source = Path("RDLi_SEAB_2019_01_01_0100.ruv")
+    radial = Radial(source)
 
-Features
---------
-* Read in CODAR, WERA and University of Hawaii HFR files
-* Run quality control tests including QARTOD tests
-* Calculate total vectors from radials
-* Output results to CTF or NetCDF
+    print(radial.time)
+    print(radial.metadata["Site"])
+    print(radial.data[["LOND", "LATD", "VELO"]].head())
 
-============
-Installation
-============
+    radial.initialize_qc()
+    radial.qc_qartod_syntax()
+    radial.qc_qartod_maximum_velocity(max_speed=250, high_speed=150)
+    radial.qc_qartod_spatial_median()
+    radial.qc_qartod_primary_flag()
 
+    radial.to_netcdf("output/SEAB_2019_01_01_0100.nc", model="gridded")
 
-Stable release
+For in-memory analysis, convert without writing a file::
+
+    dataset = radial.to_xarray(model="gridded", enhance=True)
+    speed = abs(dataset["velocity"])
+
+The ``Radial`` object keeps the manufacturer's table in ``radial.data`` as a
+``pandas.DataFrame``. ``to_xarray`` returns a new ``xarray.Dataset`` and does
+not modify that table.
+
+Documentation
+-------------
+
+The `online user guide <https://hfradarpy.readthedocs.io/>`_ includes
+practical documentation for radial data, quality control, totals, waves,
+plotting, gap filling, validation, the CLI, and the complete public API.
+
+The repository also contains `runnable examples
+<https://github.com/rowg/HFRadarPy/tree/master/examples>`_ and sample input
+files for CODAR and WERA products.
+
+Supported data
 --------------
 
-We recommend using Miniforge to manage your Python environments. `Download the Miniforge installer`_ for your computer architecture and operating system.
-In a Terminal window, run the .sh file that was downloaded.
+.. list-table::
+   :header-rows: 1
+   :widths: 25 45 30
 
+   * - Product
+     - Common inputs
+     - Primary interface
+   * - Radial currents
+     - CODAR ``.ruv``; WERA radial
+     - ``Radial``
+   * - Total currents
+     - CODAR ``.tuv``; WERA ``.cur``
+     - ``Total``
+   * - Wave products
+     - CODAR ``.wls``
+     - ``Waves``
+   * - Diagnostics
+     - CODAR ``.rdt/.hdt/.xdt``
+     - ``Diags``
+   * - Antenna patterns
+     - CODAR ``.loop``
+     - ``Loop``
 
-.. _Download the Miniforge installer: http://conda.pydata.org/miniconda.html
+Velocity convention
+-------------------
 
-.. _latest release: https://conda-forge.org/download/
+Native CODAR radial velocities are stored in centimetres per second and are
+positive toward the radar. HFRadarPy preserves those source values in
+``Radial.data`` unless ``vflip=True`` is requested. Enhanced xarray output
+adds descriptive names and CF-style metadata; always inspect each variable's
+``units`` attribute before combining it with another data source.
 
-Add the channel, `conda-forge`_ with the following command in your Terminal:
-
-.. code-block:: console
-
-        conda config --add channels conda-forge
-
-You can find out more about conda-forge from their website:
-
-.. _conda-forge: https://conda-forge.org/
-
-Run this command to install HFRadarPy:
-
-.. code-block:: console
-
-    $ mamba install hfradarpy
-
-This method will always install the most recent stable release of HFRadarPy.
-
-From sources
-------------
-
-The sources for HFRadarPy can be downloaded from the `Github repo`_.
-
-You can either clone the public repository:
-
-.. code-block:: console
-
-    $ git clone https://github.com/rowg/HFRadarPy.git
-
-Or download the `tarball`_:
-
-.. code-block:: console
-
-    $ curl -OJL https://github.com/rowg/hfradarpy/tarball/master
-
-Once you have a copy of the source, you can should create a new conda/virtual environment:
-
-Create environment
-------------------
-
-Change your current working directory to the location that you
-downloaded codar_processing to.
-
-.. code-block:: console
-
-        $ cd ~/Downloads/hfradarpy/
-
-Create conda environment from the included environment_dev.yml file:
-
-.. code-block:: console
-
-        $ conda env create -f environment_dev.yml
-
-Once the environment is done building, you can activate the environment
-by typing:
-
-.. code-block:: console
-
-        $ conda activate hfradarpy # OSX/Unix
-
-Once the environment is your active environment. You can install the toolbox to that environment.
-
-.. code-block:: console
-
-    $ python setup.py install
-
-You can also change directory into the root hfradarpy directory and install with the following:
-
-.. code-block:: console
-
-    $ pip install .
-
-Or if you are developing new code in the toolbox, you should install this library as 'editable':
-
-.. code-block:: console
-
-    $ pip install --no-deps --force-reinstall --ignore-installed -e .
-
-
-Running tests
+Project links
 -------------
-After setting up your environment, you can run all of the tests, provided you install 'pytest':
 
-.. code-block:: console
+* Source: https://github.com/rowg/HFRadarPy
+* Issues: https://github.com/rowg/HFRadarPy/issues
+* Documentation: https://hfradarpy.readthedocs.io/
+* License: MIT
 
-    $ pytest
+Citation
+--------
 
-.. _Github repo: https://github.com/rucool/hfradarpy
-.. _tarball: https://github.com/rucool/hfradarpy/tarball/master
+If HFRadarPy contributes to published work, cite the software using the
+metadata in ``CITATION.cff`` and record the version used::
 
-Credits
--------
-
-This package was created with Cookiecutter_ and the `audreyr/cookiecutter-pypackage`_ project template.
-
-.. _Cookiecutter: https://github.com/audreyr/cookiecutter
-.. _`audreyr/cookiecutter-pypackage`: https://github.com/audreyr/cookiecutter-pypackage
+    import hfradarpy
+    print(hfradarpy.__version__)

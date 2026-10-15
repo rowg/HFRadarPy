@@ -17,11 +17,12 @@
 # relative to the documentation root, use os.path.abspath to make it
 # absolute, like shown here.
 #
-import hfradarpy
 import os
 import sys
 
 sys.path.insert(0, os.path.abspath(".."))
+
+import hfradarpy
 
 # -- General configuration ---------------------------------------------
 
@@ -31,7 +32,40 @@ sys.path.insert(0, os.path.abspath(".."))
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
-extensions = ["sphinx.ext.autodoc", "sphinx.ext.viewcode"]
+extensions = [
+    "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.viewcode",
+]
+
+autosummary_generate = True
+autodoc_member_order = "bysource"
+autodoc_typehints = "description"
+napoleon_google_docstring = True
+napoleon_numpy_docstring = False
+napoleon_use_param = True
+napoleon_use_rtype = True
+
+autodoc_mock_imports = [
+    "cartopy",
+    "cmocean",
+    "dask",
+    "dateutil",
+    "geopandas",
+    "geopy",
+    "joblib",
+    "matplotlib",
+    "mpl_toolkits",
+    "netCDF4",
+    "numpy",
+    "oceans",
+    "pandas",
+    "pyproj",
+    "scipy",
+    "shapely",
+    "xarray",
+]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
@@ -47,7 +81,7 @@ master_doc = "index"
 
 # General information about the project.
 project = "HFRadarPy"
-copyright = "2021, Michael Smith"
+copyright = "2021–2026, HFRadarPy contributors"
 author = "Michael Smith"
 
 # The version info for the project you're documenting, acts as replacement
@@ -64,7 +98,7 @@ release = hfradarpy.__version__
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = "en"
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
@@ -84,17 +118,91 @@ todo_include_todos = False
 # a list of builtin themes.
 #
 html_theme = "alabaster"
+html_title = f"HFRadarPy {release}"
+html_short_title = "HFRadarPy"
 
 # Theme options are theme-specific and customize the look and feel of a
 # theme further.  For a list of options available for each theme, see the
 # documentation.
 #
-# html_theme_options = {}
+html_theme_options = {
+    "description": "Tools for high-frequency radar surface-current data",
+    "github_button": True,
+    "github_repo": "HFRadarPy",
+    "github_user": "rowg",
+    "fixed_sidebar": True,
+    "show_powered_by": False,
+}
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ["_static"]
+html_css_files = ["custom.css"]
+
+
+# A small number of legacy docstrings use plain-text layouts that docutils
+# interprets as broken reStructuredText (for example, equations containing
+# vertical bars).  The task guides document these APIs in detail; keep their
+# generated reference entries concise until the source docstrings are migrated.
+_legacy_docstring_summaries = {
+    "hfradarpy.diagnostics.Diags.to_file":
+        "Write the diagnostic table and metadata to a CODAR CTF file.",
+    "hfradarpy.patterns.Loop.to_file":
+        "Write the antenna-pattern table and metadata to a CODAR loop file.",
+    "hfradarpy.gapfill.fill_nearest_neighbor":
+        "Fill spatial-temporal gaps from valid neighbouring cells and return a dataset copy with fill flags.",
+    "hfradarpy.plot.common.plot_common":
+        "Build the Cartopy quiver map shared by the radial and total plotters.",
+    "hfradarpy.radials.Radial.qc_qartod_valid_location":
+        "Add Q203 flags using manufacturer flags, a land mask, and optional range/bearing segments.",
+    "hfradarpy.radials.Radial.qc_qartod_spatial_median":
+        "Add Q205 flags by comparing each velocity with the median of its range/bearing neighbours.",
+    "hfradarpy.radials.Radial.qc_qartod_syntax":
+        "Add the file-wide Q201 syntax and required-content flag.",
+    "hfradarpy.radials.Radial.qc_qartod_temporal_gradient":
+        "Add Q206 flags by comparing velocities with the previous radial product.",
+    "hfradarpy.radials.Radial.qc_operator_test":
+        "Add Q211 operator flags to the full radial or selected range/bearing segments.",
+    "hfradarpy.totals.combineRadials":
+        "Combine site-indexed Radial objects on a GeoSeries grid and return a ``(Total, warning)`` tuple.",
+    "hfradarpy.totals.Total.qc_site_contribution":
+        "Flag vectors dominated by one contributing site using vectorized-engine ROR and MSFR diagnostics.",
+    "hfradarpy.totals.Total.qc_threshold":
+        "Create a named pass/fail flag by applying a maximum threshold to a total-vector column.",
+    "hfradarpy.totals.totalOI":
+        "Solve one optimal-interpolation total vector from radial velocity, heading, and position data.",
+    "hfradarpy.totals.radBinsInSearchRadius":
+        "Return radial-bin indices inside a total grid cell's search region.",
+    "hfradarpy.totals.makeTotalVectors_ls_vectorized":
+        "Compute WLS or UWLS totals for all grid points with vectorized spatial selection and linear algebra.",
+    "hfradarpy.totals.makeTotalVectors_oi_vectorized":
+        "Compute optimal-interpolation totals for all grid points in memory-bounded vectorized batches.",
+    "hfradarpy.hfrnet.uwlsTotal":
+        "Compute an unweighted least-squares solution in the HFRNet compatibility layer.",
+    "hfradarpy.hfrnet.oiTotal":
+        "Compute an optimal-interpolation solution in the HFRNet compatibility layer.",
+    "hfradarpy.hfrnet.rtvComputeTotals":
+        "Compute total vectors from HFRNet-compatible radial and configuration objects.",
+    "hfradarpy.validation":
+        "Tools for collocating and validating HF-radar currents against drifters and fixed instruments.",
+    "hfradarpy.validation.sample_totals":
+        "Sample the nearest total-vector grid cell and time for each in-situ observation.",
+    "hfradarpy.validation.complex_correlation":
+        "Return complex-correlation magnitude and veering angle for two paired vector time series.",
+    "hfradarpy.validation.skill_score":
+        "Return the vector, eastward, and northward skill scores of an estimate against a reference.",
+}
+
+
+def _clean_legacy_docstrings(app, what, name, obj, options, lines):
+    summary = _legacy_docstring_summaries.get(name)
+    if summary:
+        lines[:] = [summary]
+
+
+def setup(app):
+    app.connect("autodoc-process-docstring", _clean_legacy_docstrings, priority=900)
 
 
 # -- Options for HTMLHelp output ---------------------------------------
@@ -147,7 +255,7 @@ texinfo_documents = [
         "HFRadarPy Documentation",
         author,
         "hfradarpy",
-        "One line description of project.",
-        "Miscellaneous",
+        "Tools for high-frequency radar surface-current data.",
+        "Science",
     ),
 ]

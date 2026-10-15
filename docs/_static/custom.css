@@ -1,0 +1,10 @@
+:root {
+  --hfr-blue: #176b87;
+  --hfr-dark: #103d4c;
+}
+
+div.document { max-width: 1120px; }
+div.body { max-width: 820px; }
+a { color: var(--hfr-blue); }
+h1, h2, h3 { color: var(--hfr-dark); }
+code.literal { border-radius: 3px; padding: 0.08rem 0.25rem; }
