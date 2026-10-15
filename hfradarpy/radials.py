@@ -102,7 +102,9 @@ def concat(rlist, range_minmax=None, bearing=None,
     def load_radials(radial, method, enhance=False):
         if not isinstance(radial, Radial):
             radial = Radial(radial)
-            ds = radial.to_xarray(method, enhance=enhance, range_minmax=range_minmax, bearing=bearing)
+        if radial.data.empty:
+            return None
+        ds = radial.to_xarray(method, enhance=enhance, range_minmax=range_minmax, bearing=bearing)
         return (radial.file_name, ds)
 
     if parallel:
@@ -110,17 +112,11 @@ def concat(rlist, range_minmax=None, bearing=None,
         radials = Parallel(n_jobs=num_cores)(
             delayed(load_radials)(radial=r, method=method, enhance=enhance) for r in rlist
         )
-        radial_dict = {radial: ds for (radial, ds) in radials}
     else:
-        radial_dict = {}
-        for radial in rlist:
-            if not isinstance(radial, Radial):
-                radial = Radial(radial)
-            if radial.data.shape[0] > 0:
-                radial_dict[radial.file_name] = radial.to_xarray(method, enhance=enhance, range_minmax=range_minmax,
-                                                                 bearing=bearing)
+        radials = (load_radials(r, method, enhance) for r in rlist)
+    radial_dict = dict(result for result in radials if result is not None)
 
-    ds = xr.concat(radial_dict.values(), "time")
+    ds = xr.concat(radial_dict.values(), "time", join="outer", coords="different", compat="equals")
     return ds.sortby("time")
 
 

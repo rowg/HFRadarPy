@@ -6,6 +6,7 @@ import numpy as np
 import numpy.testing as npt
 import pandas as pd
 import pytest
+import xarray as xr
 from shapely.geometry import Point
 from geopandas import GeoSeries
 
@@ -117,6 +118,52 @@ def _radial_components(u, v, head):
     """Project a (u, v) current onto radial headings (degrees true): VELO = u*sin(HEAD) + v*cos(HEAD)."""
     head = np.deg2rad(np.asarray(head, dtype=float))
     return u * np.sin(head) + v * np.cos(head)
+
+
+class TestTotalXarray:
+    @pytest.mark.parametrize("lon, lat", [
+        ([-74.0, -74.3, -74.1], [39.3, 39.0, 39.0]),
+        ([-74.0, -74.0], [39.0, 39.2]),
+        ([-74.0, -74.2], [39.0, 39.0]),
+        ([-74.0], [39.0]),
+        ([179.9, -179.9], [39.0, 39.2]),
+    ])
+    def test_default_grid_preserves_coordinates_and_values(self, lon, lat):
+        total = Total(grid=GeoSeries([Point(x, y) for x, y in zip(lon, lat)], crs="EPSG:4326"))
+        total.time = dt.datetime(2025, 1, 1)
+        total.data["VELU"] = np.arange(len(lon), dtype=float) + 1
+        total.data["VELV"] = -total.data["VELU"]
+        before = total.data.copy(deep=True)
+
+        ds = total.to_xarray()
+
+        assert dict(ds.sizes) == {"time": 1, "depth": 1, "lat": len(set(lat)), "lon": len(set(lon))}
+        assert pd.Timestamp(ds.time.values[0]) == total.time
+        assert ds.VELU.dims == ("time", "depth", "lat", "lon")
+        assert int(ds.VELU.notnull().sum()) == len(lon)
+        for i, (x, y) in enumerate(zip(lon, lat)):
+            cell = ds.sel(lon=x, lat=y)
+            assert cell.VELU.item() == i + 1
+            assert cell.VELV.item() == -(i + 1)
+        pd.testing.assert_frame_equal(total.data, before)
+
+    @pytest.mark.parametrize("grid_kind", ["geoseries", "file"])
+    def test_explicit_grid_keeps_unobserved_cells(self, grid_kind, tmp_path):
+        grid = GeoSeries([Point(x, y) for y in (39.0, 39.5) for x in (-74.5, -74.0)], crs="EPSG:4326")
+        total = Total(grid=grid)
+        total.time = dt.datetime(2025, 1, 1)
+        total.data["VELU"] = [1., 2., 3., 4.]
+        expected = total.to_xarray()
+        total.data = total.data.iloc[[0, 3]].copy()
+        expected["VELU"] = expected.VELU.where(expected.VELU.isin([1., 4.]))
+        if grid_kind == "file":
+            path = tmp_path / "grid.txt"
+            np.savetxt(path, np.column_stack((grid.x, grid.y)))
+            grid = str(path)
+
+        actual = total.to_xarray(grid=grid)
+
+        xr.testing.assert_allclose(actual, expected)
 
 
 class TestTotalLeastSquare:
@@ -353,24 +400,74 @@ class TestCombineRadialsEngines:
         npt.assert_allclose(many_batches.to_numpy(dtype=float), one_batch.to_numpy(dtype=float),
                             rtol=1e-12, atol=1e-12)
 
+    @staticmethod
+    def _hfrprogs_flat_counts(rdf, grid, radius_km=10):
+        """Radials within radius_km of each grid point by HFRProgs lonlat2dist (makeTotals TotalsNumRads)."""
+        rad = _stackRadials(rdf)
+        # HFRProgs lonlat2km (Bowditch) metres per degree at the grid point's latitude
+        glon, glat = grid.x.to_numpy()[:, None], grid.y.to_numpy()[:, None]
+        con = np.deg2rad(glat)
+        ymetr = 111132.92 - 559.82 * np.cos(2 * con) + 1.175 * np.cos(4 * con) - 0.0023 * np.cos(6 * con)
+        xmetr = 111412.84 * np.cos(con) - 93.50 * np.cos(3 * con) + 0.0118 * np.cos(5 * con)
+        dist_km = np.hypot((rad["LOND"] - glon) * xmetr, (rad["LATD"] - glat) * ymetr) / 1000
+        return (dist_km < radius_km).sum(axis=1)
+
     @pytest.mark.parametrize("engine", ["loop", "vectorized"])
     def test_flat_distance_selects_hfrprogs_radials(self, combine_grid, engine):
         """distance='flat' counts the radials HFRProgs makeTotals does: lonlat2dist(grid point, radial) < spatthresh."""
         rdf = _radial_dataframe(np.random.default_rng(0))
         tot, _ = combineRadials(rdf, combine_grid, method="uwls", engine=engine, distance="flat", **self.common)
-        rad = _stackRadials(rdf)
-
-        # HFRProgs lonlat2km (Bowditch) metres per degree at the grid point's latitude
-        glon, glat = combine_grid.x.to_numpy()[:, None], combine_grid.y.to_numpy()[:, None]
-        con = np.deg2rad(glat)
-        ymetr = 111132.92 - 559.82 * np.cos(2 * con) + 1.175 * np.cos(4 * con) - 0.0023 * np.cos(6 * con)
-        xmetr = 111412.84 * np.cos(con) - 93.50 * np.cos(3 * con) + 0.0118 * np.cos(5 * con)
-        dist_km = np.hypot((rad["LOND"] - glon) * xmetr, (rad["LATD"] - glat) * ymetr) / 1000
-        expected = (dist_km < 10).sum(axis=1)
+        expected = self._hfrprogs_flat_counts(rdf, combine_grid)
 
         valid = tot.data["VELU"].notna().to_numpy()
         assert valid.sum() > 20
         npt.assert_array_equal(tot.data.loc[valid, "NRAD"].to_numpy(dtype=float), expected[valid])
+
+    def test_count_all_points_matches_hfrprogs(self, combine_grid):
+        """count_all_points=True gives HFRProgs TotalsNumRads at every grid point, also without a total vector."""
+        rdf = _radial_dataframe(np.random.default_rng(0))
+        strict = dict(minContrSites=2, minContrRads=30)
+        tot, _ = combineRadials(rdf, combine_grid, method="uwls", engine="vectorized", distance="flat",
+                                count_all_points=True, **strict, **self.common)
+        expected = self._hfrprogs_flat_counts(rdf, combine_grid)
+
+        nrad = tot.data["NRAD"].to_numpy(dtype=float)
+        no_vector = tot.data["VELU"].isna().to_numpy()
+        npt.assert_array_equal(nrad, expected)
+        assert (no_vector & (nrad > 0)).sum() > 20  # counts where too few radials gave no vector
+        assert (nrad == 0).sum() > 0  # grid points out of range are 0, not NaN
+
+    @pytest.mark.parametrize("method, kwargs", [
+        ("uwls", {}),
+        ("uwls", dict(distance="flat")),
+        ("oi", dict(mdlvar=420, errvar=66, sx=10.0, sy=10.0)),
+    ])
+    def test_count_all_points_keeps_the_vectors(self, combine_grid, method, kwargs):
+        rdf = _radial_dataframe(np.random.default_rng(0))
+        default, _ = combineRadials(rdf, combine_grid, method=method, engine="vectorized", **kwargs, **self.common)
+        counted, _ = combineRadials(rdf, combine_grid, method=method, engine="vectorized", count_all_points=True,
+                                    **kwargs, **self.common)
+
+        others = [c for c in self.columns if c != "NRAD"]
+        npt.assert_array_equal(counted.data[others].to_numpy(dtype=float), default.data[others].to_numpy(dtype=float))
+        valid = default.data["VELU"].notna()
+        assert valid.sum() > 20
+        npt.assert_array_equal(counted.data.loc[valid, "NRAD"].to_numpy(dtype=float),
+                               default.data.loc[valid, "NRAD"].to_numpy(dtype=float))
+        assert counted.data["NRAD"].notna().all()
+        assert (counted.data.loc[~valid, "NRAD"] > 0).any()
+
+    def test_count_all_points_without_radials_in_range(self, combine_grid):
+        far = combine_grid.translate(xoff=20)  # grid far away from every radial
+        tot, _ = combineRadials(_radial_dataframe(), far, method="uwls", engine="vectorized", count_all_points=True,
+                                **self.common)
+        assert tot.data["VELU"].isna().all()
+        assert (tot.data["NRAD"] == 0).all()
+
+    def test_count_all_points_needs_vectorized(self, combine_grid):
+        with pytest.raises(ValueError):
+            combineRadials(_radial_dataframe(), combine_grid, method="uwls", engine="loop", count_all_points=True,
+                           **self.common)
 
     def test_flat_distance_matches_loop(self, combine_grid):
         rdf = _radial_dataframe(np.random.default_rng(1))
@@ -521,6 +618,109 @@ class TestQCSiteContribution:
         t = _make_total(velo=np.ones(2), velu=np.ones(2), velv=np.zeros(2), head=np.full(2, 90.0))
         with pytest.raises(ValueError):
             t.qc_site_contribution(max_share=0.75)
+
+    @pytest.mark.parametrize("with_header", [False, True])
+    def test_recalculate_primary_flag_includes_new_test(self, with_header):
+        t = self._total()
+        t.qc_qartod_maximum_velocity()
+        t.qc_qartod_primary_flag()
+        assert (t.data.PRIM == 1).all()
+        if with_header:
+            t._tables[1] = {"_TableHeader": [["VELU", "PRIM", "Q303"], ["(cm/s)", "(flag)", "(flag)"]]}
+        t.qc_site_contribution(max_share=0.75)
+        t.qc_qartod_primary_flag(recalculate=True)
+        assert t.data.PRIM.tolist() == [1, 1, 4, 4, 1]
+        assert "SCON" in t.metadata["QCTest"]["PRIM"]
+        if with_header:
+            assert t._tables[1]["_TableHeader"] == [["VELU", "Q303"], ["(cm/s)", "(flag)"]]
+        t.qc_qartod_primary_flag(recalculate=True)
+        assert t.data.PRIM.tolist() == [1, 1, 4, 4, 1]
+
+
+class TestQCValidLocationPolygon:
+    # Square polygon from -74.8 to -74.2 E and 38.2 to 38.8 N
+    polygon = ([-74.8, -74.2, -74.2, -74.8, -74.8], [38.2, 38.2, 38.8, 38.8, 38.2])
+
+    def _total(self):
+        # inside, outside, on the edge, outside
+        return _make_total(velo=np.ones(4), velu=np.ones(4), velv=np.zeros(4), head=np.full(4, 90.0),
+                           lond=[-74.5, -74.0, -74.2, -74.5], latd=[38.5, 38.5, 38.5, 39.0])
+
+    def test_land_polygon_flags_inside_and_edge(self):
+        t = self._total()
+        t.qc_valid_location_polygon(*self.polygon)
+        assert t.data["Q305"].tolist() == [4, 1, 4, 1]
+
+    def test_water_polygon_flags_outside(self):
+        t = self._total()
+        t.qc_valid_location_polygon(*self.polygon, flag_inside=False)
+        assert t.data["Q305"].tolist() == [1, 4, 1, 4]
+
+    def test_empty_polygon_passes_everything(self):
+        t = self._total()
+        t.qc_valid_location_polygon([], [])
+        assert t.data["Q305"].tolist() == [1, 1, 1, 1]
+
+    def test_metadata_and_primary_flag(self):
+        t = self._total()
+        t.qc_valid_location_polygon(*self.polygon, name="mask.txt")
+        assert "qc_valid_location_polygon (Q305)" in t.metadata["QCTest"]["Q305"]
+        assert "mask.txt" in t.metadata["QCTest"]["Q305"]
+        t.qc_qartod_primary_flag()
+        assert t.data["PRIM"].tolist() == [4, 1, 4, 1]
+
+    def test_does_not_run_twice(self):
+        t = self._total()
+        t.qc_valid_location_polygon(*self.polygon)
+        t.qc_valid_location_polygon(*self.polygon, flag_inside=False)
+        assert t.data["Q305"].tolist() == [4, 1, 4, 1]
+
+
+class TestQCThreshold:
+    def _total(self):
+        t = _make_total(velo=np.ones(4), velu=np.ones(4), velv=np.zeros(4), head=np.full(4, 90.0))
+        t.data["CQAL"] = [0.1, -0.6, 0.5, np.nan]
+        return t
+
+    def test_maximum(self):
+        t = self._total()
+        t.qc_threshold("Q309", "CQAL", 0.5)
+        assert t.data["Q309"].tolist() == [1, 1, 1, 1]  # 0.5 is not above the threshold; NaN passes
+
+    def test_absolute(self):
+        t = self._total()
+        t.qc_threshold("Q309", "CQAL", 0.5, absolute=True)
+        assert t.data["Q309"].tolist() == [1, 4, 1, 1]
+
+    def test_metadata_and_primary_flag(self):
+        t = self._total()
+        t.qc_threshold("Q309", "CQAL", 0.5, absolute=True, name="qc_oi_uv_covariance")
+        assert "qc_oi_uv_covariance (Q309)" in t.metadata["QCTest"]["Q309"]
+        t.qc_qartod_primary_flag()
+        assert t.data["PRIM"].tolist() == [1, 4, 1, 1]
+
+
+class TestHFRProgsGDOP:
+    def test_largest_eigenvalue_of_the_covariance(self):
+        rng = np.random.default_rng(0)
+        a = rng.normal(size=(50, 6, 2))  # 50 grid points, 6 radials each
+        cov = np.linalg.inv(np.swapaxes(a, 1, 2) @ a)  # C = inv(A'A)
+        t = _make_total(velo=np.ones(50), velu=np.ones(50), velv=np.zeros(50), head=np.full(50, 90.0),
+                        gdop=np.sqrt(cov[:, 0, 0] + cov[:, 1, 1]),
+                        uqal=np.sqrt(cov[:, 0, 0]), vqal=np.sqrt(cov[:, 1, 1]))
+        t.data["CQAL"] = cov[:, 0, 1]
+        trace_gdop = t.data["GDOP"].to_numpy()
+
+        t.use_hfrprogs_gdop()
+        npt.assert_allclose(t.data["GDOP"], np.sqrt(np.linalg.eigvalsh(cov)[:, -1]), rtol=1e-12)
+        assert (t.data["GDOP"].to_numpy() < trace_gdop).all()
+
+    def test_missing_vectors_stay_missing(self):
+        t = _make_total(velo=[1.0, np.nan], velu=[1.0, np.nan], velv=[0.0, np.nan], head=[90.0, np.nan],
+                        uqal=[1.0, np.nan], vqal=[2.0, np.nan])
+        t.data["CQAL"] = [0.0, np.nan]
+        t.use_hfrprogs_gdop()
+        npt.assert_allclose(t.data["GDOP"].to_numpy(), [2.0, np.nan])
 
 
 # ---------------------------------------------------------------------------

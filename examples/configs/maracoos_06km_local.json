@@ -1,0 +1,22 @@
+{
+  "_comment": "Local overrides for realtime_06km_maracoos_v03 on Mike's laptop: input, grid, mask and output paths. The driver options match realtime_maracoos_06km_combine.m (QC305 polygon is land; vectors failing QC305 are removed).",
+  "conf": {
+    "Radials": {
+      "BaseDir": "/Users/mikesmith/Downloads/radials_clean/",
+      "MaskDir": "/Users/mikesmith/Documents/MATLAB/maracoos/mask_files/MARACOOS_6kmMask.txt"
+    },
+    "Totals": {
+      "GridFile": "/Users/mikesmith/Documents/github/HFRadarPy/examples/data/grid_files/maracoos_grid_6km_extended.txt",
+      "MaskFile": "/Users/mikesmith/Documents/MATLAB/maracoos/mask_files/MARACOOS_6kmMask.txt",
+      "UWLS": {"BaseDir": "/Users/mikesmith/Desktop/realtime_totals/maracoos/lsq/"},
+      "OI": {"BaseDir": "/Users/mikesmith/Desktop/realtime_totals/maracoos/oi/"}
+    },
+    "QC": {
+      "QC305_MaskFile": "/Users/mikesmith/Documents/MATLAB/maracoos/mask_files/MARACOOS_6kmMask.txt"
+    }
+  },
+  "driver": {
+    "qc305_polygon": "land",
+    "qc305_remove_vectors": true
+  }
+}
