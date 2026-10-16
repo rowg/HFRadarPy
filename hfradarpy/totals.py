@@ -224,7 +224,7 @@ def totalOI(VelHeadLonLat, gridloc, mdlvar,errvar,sx,sy,oi_option='exponential')
                       model variance as a function of water depth, the
                       length from the coastline, or constant.
         errvar: observational error variance, which can be constant
-						or hourly standard deviation of radial velocity (HSTD, so called
+						or hourly standard deviation of radial velocity (HSTD, so-called
 						temporal uncertainty). For example, if the observational
 						uncertainty in HF radar observations is 3-5 cm/s, the corresponding
 						error variance = 9-25 (cm/s)^2.
@@ -917,7 +917,7 @@ class Total(fileParser):
             # Get the site coordinates
             siteLon = self.site_source['Lon'].values.tolist()
             siteLat = self.site_source['Lat'].values.tolist()
-            # Create Geod object according to the Total CRS, if defined. Otherwise use WGS84 ellipsoid
+            # Create Geod object according to the Total CRS, if defined. Otherwise, use WGS84 ellipsoid
             if self.metadata['GreatCircle']:
                 g = Geod(ellps=self.metadata['GreatCircle'].split()[0].replace('"', ''))
             else:
@@ -1032,7 +1032,7 @@ class Total(fileParser):
         """
         # Load the reference file (GeoPandas "naturalearth_lowres")
         mask_dir = Path(__file__).with_name(".hfradarpy")
-        if (res == 'high'):
+        if res == 'high':
             maskfile = os.path.join(mask_dir, 'ne_10m_admin_0_countries.shp')
         else:
             maskfile = os.path.join(mask_dir, 'ne_110m_admin_0_countries.shp')
@@ -1058,16 +1058,14 @@ class Total(fileParser):
         else:
             return waterIndex
 
-    def duplicate_test_check(self, test_str, recalculate=False):
+    def duplicate_test_check(self, test_str, recalculate=True):
         if test_str in self.data.columns:
             if recalculate:
                 logger.warning(f"Overwriting QC test {test_str} results.")
                 # Remove the previous results column from the dataframe
                 # and remove tableheader labels from protected attributes
-                # (otherwise there will be an error in writing the file to ruv)
+                # (otherwise there will be an error in writing the file to tuv)
                 self.data.drop(test_str, axis=1,inplace=True)
-                self._tables[1]["_TableHeader"][0].remove(test_str)
-                self._tables[1]["_TableHeader"][1].remove("(flag)")
                 # Remove the previous QCTest information in the header
                 if test_str in self.metadata['QCTest']:
                     del self.metadata['QCTest'][test_str]
@@ -1369,8 +1367,8 @@ class Total(fileParser):
 
     def _to_xarray_gridded(self, grid=None):
         """
-        Convert total file to an xarray dataset on a total grid.
-        This dataset has dimensions of time, depth, lon and lat..
+        Convert total file to a xarray dataset on a total grid.
+        This dataset has dimensions of time, depth, lon and lat.
 
         Adapted from MATLAB code by Mark Otero
         http://cordc.ucsd.edu/projects/mapping/documents/HFRNet_Radial_NetCDF.pdf
@@ -1385,7 +1383,7 @@ class Total(fileParser):
                 are used to create the xarray grid.
 
         Returns:
-            xarray.Dataset: total file converted to an xarray dataset with dimensions of time, depth, latitude and longitude
+            xarray.Dataset: total file converted to a xarray dataset with dimensions of time, depth, latitude and longitude
         """
         logging.info("Converting total matrix to multidimensional dataset")
 
@@ -1720,7 +1718,7 @@ class Total(fileParser):
         """
         This function applies the European standard data model developed in the
         framework of the EuroGOOS HFR Task Team to the Total object.
-        The Total object content is stored into an xarray Dataset built from the
+        The Total object content is stored into a xarray Dataset built from the
         xarray DataArrays created by the Total method to_xarray_multidimensional.
         Variable data types and data packing information are collected from
         "Data_Models/EHN/Totals/Total_Data_Packing.json" file.
@@ -2050,7 +2048,7 @@ class Total(fileParser):
     def qc_ehn_maximum_velocity(self, totMaxSpeed=1.2):
         """
         This test labels total velocity vectors whose module is smaller than a maximum velocity threshold
-        with a “good data” flag. Otherwise the vectors are labeled with a “bad data” flag.
+        with a “good data” flag. Otherwise, the vectors are labeled with a “bad data” flag.
         The ARGO QC flagging scale is used.
 
         This test was defined in the framework of the EuroGOOS HFR Task Team based on the
@@ -2079,7 +2077,7 @@ class Total(fileParser):
         """
         This test labels total velocity vectors whose temporal variances for both U and V
         components are smaller than a maximum variance threshold with a “good data” flag.
-        Otherwise the vectors are labeled with a “bad data” flag.
+        Otherwise, the vectors are labeled with a “bad data” flag.
         The ARGO QC flagging scale is used.
 
         This test was defined in the framework of the EuroGOOS HFR Task Team based on the
@@ -2118,7 +2116,7 @@ class Total(fileParser):
     def qc_ehn_gdop_threshold(self, maxGDOP=2):
         """
         This test labels total velocity vectors whose GDOP is smaller than a maximum GDOP threshold
-        with a “good data” flag. Otherwise the vectors are labeled with a “bad data” flag.
+        with a “good data” flag. Otherwise, the vectors are labeled with a “bad data” flag.
         The ARGO QC flagging scale is used.
 
         This test was defined in the framework of the EuroGOOS HFR Task Team based on the
@@ -2144,7 +2142,7 @@ class Total(fileParser):
         """
         This test labels total velocity vectors with a number of contributing radial velocities bigger
         than the minimum number defined for normal operations with a “good data” flag.
-        Otherwise the vectors are labeled with a “bad data” flag.
+        Otherwise, the vectors are labeled with a “bad data” flag.
         The ARGO QC flagging scale is used.
 
         This test was defined in the framework of the EuroGOOS HFR Task Team based on the
@@ -2176,7 +2174,7 @@ class Total(fileParser):
         measured in the previous timestamp at the same location.
         Each vector for which the velocity difference is smaller than the specified threshold for normal
         operations (tempDerThr), is labeled with a "good data" flag.
-        Otherwise the vector is labeled with a “bad data” flag.
+        Otherwise, the vector is labeled with a “bad data” flag.
         The ARGO QC flagging scale is used.
 
         This test was defined in the framework of the EuroGOOS HFR Task Team based on the
@@ -2219,7 +2217,7 @@ class Total(fileParser):
     def qc_ehn_overall_qc_flag(self):
         """
 
-        This QC test labels total velocity vectors with a ‘good_data” flag if all QC tests are passed.
+        This QC test labels total velocity vectors with a "good_data" flag if all QC tests are passed.
         Otherwise, the vectors are labeled with a “bad_data” flag.
         The ARGO QC flagging scale is used.
 
@@ -2239,38 +2237,65 @@ class Total(fileParser):
         self.metadata['QCTest'][
             testName] = 'Overall QC Flag - Test applies to each vector. Test checks if all QC tests are passed.'
 
-    def qc_qartod_gdop(self, max_GDOP=2, recalculate=False):
+    def qc_qartod_gdop(self, maxGDOP=None, maxUQAL=None, maxVQAL=None, maxCQAL=None,recalculate=True):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
         GDOP Threshold (Test 302)
-        This test labels total velocity vectors whose GDOP is smaller than a maximum GDOP threshold
+        This test labels total velocity vectors whose geometric error parameters (GDOP, uncertainty in 
+        U and V components (UQAL and VQAL), and UV covariance (CQAL)) are smaller than a maximum threshold 
         with a “good data” flag. Otherwise, the vectors are labeled with a “bad data” flag.
 
         INPUTS:
             maxGDOP: maximum allowed GDOP for normal operations
+            maxUQAL: maximum allowed UQAL
+            maxVQAL: maximum allowed VQAL
+            maxCQAL: maximum allowed CQAL
+
         """
         # Set the test name
         test_str = 'Q302'
+        applied_test_str = ''
 
         #check that test hasn't been run before
         if self.duplicate_test_check(test_str, recalculate=recalculate):
             return
 
+        # if no thresholds were provided, set all rows to the "not evaluated" flag (flag = 2)
+        if not maxGDOP and not maxUQAL and not maxVQAL and not maxCQAL:
+            self.data.loc[:, test_str] = 2
+            self.metadata['QCTest'][
+                test_str] = f"qc_qartod_gdop ({test_str}) - Test applies to each row. Thresholds=[]" \
+                            + f"]: See results in column {test_str} below"
+            return
+
         # Add new column to the DataFrame for QC data by setting every row as passing the test (flag = 1)
         self.data.loc[:, test_str] = 1
+        self.metadata['QCTest'][test_str] = 'qc_qartod_gdop - Test applies to each vector. '
 
         # set bad flag for velocities not passing the test
-        self.data.loc[(self.data['GDOP'] > max_GDOP), test_str] = 4
+        if maxGDOP:
+            self.data.loc[(self.data['GDOP'] > maxGDOP), test_str] = 4
+            applied_test_str += f"maxGDOP={maxGDOP} "
 
-        self.metadata['QCTest'][test_str] = 'qc_qartod_gdop - Test applies to each vector. ' \
-                                            + 'Threshold=[' + f'GDOP threshold={max_GDOP}]'
+        if maxUQAL:
+            self.data.loc[(self.data['UQAL'] > maxUQAL), test_str] = 4
+            applied_test_str += f"maxUQAL={maxUQAL} "
+
+        if maxVQAL:
+            self.data.loc[(self.data['VQAL'] > maxVQAL), test_str] = 4
+            applied_test_str += f"maxVQAL={maxVQAL} "
+
+        if maxCQAL:
+            self.data.loc[(abs(self.data['CQAL']) > maxCQAL), test_str] = 4
+            applied_test_str += f"max|CQAL|={maxCQAL} "
+
         self.metadata['QCTest'][
-            test_str] = f"qc_qartod_gdop ({test_str}) - Test applies to each row. Thresholds=" \
-                        + "[ " + f"max={str(max_GDOP)} (cm/s) " \
+            test_str] = f"qc_qartod_gdop ({test_str}) - Test applies to each row. Thresholds=[" \
+                        + f"{applied_test_str}" \
                         + f"]: See results in column {test_str} below"
 
-    def qc_qartod_u_uncertainty(self, max_Uerr=0.6, recalculate=False):
+    def qc_qartod_u_uncertainty(self, max_Uerr=0.6, recalculate=True):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2302,7 +2327,7 @@ class Total(fileParser):
                         + "[ " + f"max={str(max_Uerr)} (cm/s) " \
                         + f"]: See results in column {test_str} below"
 
-    def qc_qartod_v_uncertainty(self, max_Verr=0.6, recalculate=False):
+    def qc_qartod_v_uncertainty(self, max_Verr=0.6, recalculate=True):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2337,7 +2362,7 @@ class Total(fileParser):
                         + f"]: See results in column {test_str} below"
 
 
-    def qc_qartod_maximum_velocity(self, max_speed=250, high_speed=150, recalculate=False):
+    def qc_qartod_maximum_velocity(self, max_speed=250, high_speed=150, recalculate=True):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2354,6 +2379,8 @@ class Total(fileParser):
                 Maximum total Speed (cm/s). Totals beyond this speed will be flagged a failure. Defaults to 250
             high_speed (int, optional):
                 High total Speed (cm/s). Totals between high and max speed will be flagged suspect. Defaults to 150
+            recalculate (bool, optional): if True and a column for this test exists already,
+                the test will be re-run and that column will be overwritten
         """
         test_str = "Q303"
 
@@ -2380,7 +2407,7 @@ class Total(fileParser):
                         + f"max_vel={str(max_speed)} (cm/s) " \
                         + f"]: See results in column {test_str} below"
 
-    def qc_qartod_valid_location(self, use_mask=True, res='high', recalculate=False):
+    def qc_qartod_valid_location(self, use_mask=True, res='high', recalculate=True):
         """
         Integrated Ocean Observing System (IOOS)
         Quality Assurance of Real-Time Oceanographic Data (QARTOD)
@@ -2395,6 +2422,8 @@ class Total(fileParser):
         Args:
             use_mask (bool, optional): Use mask_over_land function. Defaults to True.
             res (string, optional): either 'low' or 'high', Defaults to high.
+            recalculate (bool, optional): if True and a column for this test exists already,
+                the test will be re-run and that column will be overwritten
        """
 
         test_str = "Q305"
@@ -2426,8 +2455,85 @@ class Total(fileParser):
                 f"qc_qartod_valid_location did not run, no {flag_column} column, land mask and angseg either not used or not successfully applied")
 
 
+    def qc_operator_test(self, fail_all=False, suspect_all=False, flag_segment=None, recalculate=True):
+        """
+        An operator can use this test to mark any radial as suspect or failing
+        based on their review of data/diagnostics and assessment of data quality.
 
-    def qc_qartod_primary_flag(self, include=None, recalculate=False):
+        Args:
+            fail_all (bool, optional): Set fail flag for all totals. [Defaults to False.]
+            suspect_all (bool, optional): Set suspect flag for all totals. [Defaults to False.]
+            flag_segment (array of dictionaries, optional): Used to set flags for specific areas (segments)
+                Each array element is a dictionary defined by the following keys:
+                lat_min (float) :
+                    minimum latitude
+                lat_max (float) :
+                    maximum latitude
+                lon_min (float) :
+                    minimum longitude
+                lon_max (float) :
+                    maximum longitude
+                flag_value (int) : the flag value to assign to this segment
+            recalculate (bool, optional): if True and a column for this test exists already,
+                the test will be re-run and that column will be overwritten
+       """
+
+        test_str = "QCOP"
+
+        # check that test hasn't been run before
+        if self.duplicate_test_check(test_str, recalculate=recalculate):
+            return
+
+        applied_test_str = ''
+        success = 0  # start with none of the tests running successfully
+
+        self.data[test_str] = 1  # add new column of passing values
+        if suspect_all and fail_all:
+            logger.warning(
+                f"Incompatible inputs fail_all=True and suspect_all=True. Result will be not evaluated.")
+            success = 0
+        elif fail_all:
+            self.data[test_str] = 4
+            applied_test_str += f"(all fail)"
+            success = 1
+        elif suspect_all:
+            self.data[test_str] = 3
+            applied_test_str += f"(all suspect)"
+            success = 1
+
+        if flag_segment:
+            for seg in flag_segment:
+                # add the distances
+                if (seg['lat_min'] < 0 and seg['lat_max'] > 0) or  (seg['lat_min'] > 0 and seg['lat_max'] < 0):
+                    logger.warning(f"Skipping segment that spans 0 latitude.")
+                elif (seg['lon_min'] < 0 and seg['lon_max'] > 0) or  (seg['lon_min'] > 0 and seg['lon_max'] < 0):
+                     logger.warning(f"Skipping segment that spans 0 longitude.")
+                # find locations of totals in specified longitude and latitude limits and assign flags
+                else:
+                    try:
+                        self.data.loc[
+                                (self.data["LOND"] >= seg['lon_min']) & (
+                                        self.data["LOND"] <= seg['lon_max']) & (
+                                        self.data["LATD"] >= seg['lat_min']) & (
+                                        self.data["LATD"] <= seg['lat_max']), test_str
+                            ] = seg['flag_value']  # set flag for this segment
+                        success = 1
+                        applied_test_str += f"(flagged segment as {seg['flag_value']})"
+                    except:
+                        logger.warning(f"qc_operator_test: segment not flagged")
+
+        if success == 0:
+            self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
+            logger.warning(
+                f"qc_operator_test did not execute successfully")
+
+        self.metadata["QCTest"][
+            test_str] = f"qc_operator_test ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: " \
+                        + f"See results in column {test_str} below"
+
+
+
+    def qc_qartod_primary_flag(self, include=None, recalculate=True):
         """
         A primary flag is a single flag set to the worst case of all QC flags within the data record.
 
@@ -2435,6 +2541,8 @@ class Total(fileParser):
             include (list, optional):
                 list of quality control tests which should be included in the primary flag.
                 Defaults to None, which includes all tests.
+            recalculate (bool, optional): if True and a column for this test exists already,
+                the test will be re-run and that column will be overwritten
         """
         test_str = "PRIM"
 

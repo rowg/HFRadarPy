@@ -2934,7 +2934,7 @@ class Radial(fileParser):
                 flag_value (int) : the flag value to assign to this segment
        """
 
-        test_str = "Q211"
+        test_str = "QCOP"
 
         # check that test hasn't been run before
         if self.duplicate_test_check(test_str, recalculate=recalculate):
