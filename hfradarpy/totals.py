@@ -2487,7 +2487,7 @@ class Total(fileParser):
         # default case where nothing will be flagged
         if not fail_all and not suspect_all and flag_segment == None:
             self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
-            applied_test_str += 'not evaluated'
+            applied_test_str = 'not evaluated'
             self.metadata["QCTest"][
                 test_str] = f"qc_operator_test ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: " \
                             + f"See results in column {test_str} below"
