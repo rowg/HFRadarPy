@@ -2484,23 +2484,20 @@ class Total(fileParser):
         if self.duplicate_test_check(test_str, recalculate=recalculate):
             return
 
+        # default case where nothing will be flagged
+        if not fail_all and not suspect_all and flag_segment == None:
+            self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
+            applied_test_str += 'not evaluated'
+            self.metadata["QCTest"][
+                test_str] = f"qc_operator_test ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: " \
+                            + f"See results in column {test_str} below"
+            return
+
         applied_test_str = ''
         success = 0  # start with none of the tests running successfully
 
+        #flag segment will be executed first
         self.data[test_str] = 1  # add new column of passing values
-        if suspect_all and fail_all:
-            logger.warning(
-                f"Incompatible inputs fail_all=True and suspect_all=True. Result will be not evaluated.")
-            success = 0
-        elif fail_all:
-            self.data[test_str] = 4
-            applied_test_str += f"(all fail)"
-            success = 1
-        elif suspect_all:
-            self.data[test_str] = 3
-            applied_test_str += f"(all suspect)"
-            success = 1
-
         if flag_segment:
             for seg in flag_segment:
                 # add the distances
@@ -2520,12 +2517,28 @@ class Total(fileParser):
                         success = 1
                         applied_test_str += f"(flagged segment as {seg['flag_value']})"
                     except:
+                        success = 0
                         logger.warning(f"qc_operator_test: segment not flagged")
+
+        # flag all options will be executed next and may override flag segment results
+        if suspect_all and fail_all:
+            logger.warning(
+                f"Incompatible inputs fail_all=True and suspect_all=True. Result will be not evaluated.")
+            success = 0
+        elif fail_all:
+            self.data[test_str] = 4
+            applied_test_str = f"(all fail)"
+            success = 1
+        elif suspect_all:
+            self.data[test_str] = 3
+            applied_test_str = f"(all suspect)"
+            success = 1
 
         if success == 0:
             self.data[test_str] = 2  # add column of "not evaluated" flags if none of the test methods were successful
             logger.warning(
                 f"qc_operator_test did not execute successfully")
+            applied_test_str += " did not execute successfully"
 
         self.metadata["QCTest"][
             test_str] = f"qc_operator_test ({test_str}) - Test applies to each row. Thresholds=[{applied_test_str}]: " \
